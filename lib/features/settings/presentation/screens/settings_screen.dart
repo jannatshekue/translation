@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/services/backup_service.dart';
 import '../../../../core/services/settings_service.dart';
-import '../../../../core/services/sign_classifier_service.dart';
 import '../../../../shared/widgets/app_background.dart';
 import '../../../../shared/widgets/pressable_scale.dart';
 import '../../../../shared/widgets/section_card.dart';
@@ -121,39 +120,6 @@ class SettingsScreen extends StatelessWidget {
                           ),
                         ],
                       ),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  _sectionLabel(context, 'Sign language', Icons.sign_language_outlined),
-                  SectionCard(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          'Which trained sign vocabulary Sign Recognition should '
-                          'try first, alongside your Custom Signs and the built-in '
-                          'gesture set.',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                        const SizedBox(height: 12),
-                        SegmentedButton<SignLanguage>(
-                          segments: const [
-                            ButtonSegment(
-                              value: SignLanguage.asl,
-                              label: Text('ASL'),
-                            ),
-                            ButtonSegment(
-                              value: SignLanguage.ksl,
-                              label: Text('KSL'),
-                            ),
-                          ],
-                          selected: {settings.signLanguage},
-                          onSelectionChanged: (selection) {
-                            settings.hapticTap();
-                            settings.setSignLanguage(selection.first);
-                          },
-                        ),
-                      ],
                     ),
                   ),
                   const SizedBox(height: 24),

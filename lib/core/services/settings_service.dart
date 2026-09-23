@@ -41,7 +41,7 @@ class SettingsService extends ChangeNotifier {
   /// effect once that language's model is actually bundled (see
   /// ml_training/README.md) — otherwise the screen quietly falls back to
   /// the built-in gesture set and Custom Signs.
-  SignLanguage signLanguage = SignLanguage.asl;
+  SignLanguage signLanguage = SignLanguage.ksl;
 
   /// Minutes since midnight. Defaults: day starts 6:00 AM, night starts 7:00 PM.
   int dayStartMinutes = 6 * 60;
@@ -82,7 +82,7 @@ class SettingsService extends ChangeNotifier {
     nightStartMinutes = prefs.getInt(_nightStartMinutesKey) ?? 19 * 60;
     final profileIndex = prefs.getInt(_userProfileKey);
     userProfile = profileIndex == null ? null : UserProfile.values[profileIndex];
-    signLanguage = SignLanguage.values[prefs.getInt(_signLanguageKey) ?? SignLanguage.asl.index];
+    signLanguage = SignLanguage.values[prefs.getInt(_signLanguageKey) ?? SignLanguage.ksl.index];
     _syncAutoThemeTimer();
     notifyListeners();
   }

@@ -134,25 +134,33 @@ class _SignRecognitionScreenState extends State<SignRecognitionScreen> {
   }
 
   /// Priority: the user's own Custom Signs first (most specific to them),
-  /// then the trained classifier for the selected sign language (if its
-  /// model is bundled — see ml_training/README.md), then the built-in
-  /// gesture set as a final fallback.
+  /// then the built-in gesture set (a dedicated, purpose-built classifier
+  /// for its own small fixed vocabulary — cheap and safe to check first
+  /// since it reports `unknown` rather than guessing), then the trained
+  /// sign-language classifier as the final fallback. The trained classifier
+  /// must go last: it's a closed-set classifier over its own vocabulary, so
+  /// it will confidently mislabel out-of-vocabulary poses (e.g. a thumbs-up)
+  /// as some letter/word instead of admitting it doesn't know — checking
+  /// gestures first prevents that false match from ever being reached.
   Future<String?> _resolveLabel(List<Hand> hands) async {
     if (hands.isEmpty) return null;
     final landmarks = hands.first.landmarks;
     if (landmarks.isNotEmpty) {
       final customMatch = CustomSignRecognizer.instance.match(landmarks);
       if (customMatch != null) return customMatch.sign.label;
+    }
 
+    final gesture = hands.first.gesture;
+    if (gesture != null && gesture.type != GestureType.unknown) {
+      return _gestureLabel(gesture.type);
+    }
+
+    if (landmarks.isNotEmpty) {
       final trainedMatch = await SignClassifierService.instance.classify(
         landmarks,
         language: SettingsService.instance.signLanguage,
       );
       if (trainedMatch != null) return trainedMatch.label;
-    }
-    final gesture = hands.first.gesture;
-    if (gesture != null && gesture.type != GestureType.unknown) {
-      return _gestureLabel(gesture.type);
     }
     return null;
   }

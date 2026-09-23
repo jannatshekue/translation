@@ -7,6 +7,7 @@ import '../../../../core/services/stt_service.dart';
 import '../../../../core/services/translation_service.dart';
 import '../../../../core/services/tts_service.dart';
 import '../../../../core/utils/permission_primer.dart';
+import '../../../../core/utils/priority_languages.dart';
 import '../../../../shared/widgets/app_background.dart';
 import '../../../../shared/widgets/pressable_scale.dart';
 
@@ -40,7 +41,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Future<void> _loadLocales() async {
-    final locales = await SttService.instance.getAvailableLocales();
+    final locales = sortByPriorityWith(
+      await SttService.instance.getAvailableLocales(),
+      (l) => l.localeId,
+    );
     if (!mounted) return;
     setState(() {
       _locales = locales;

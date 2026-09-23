@@ -80,13 +80,21 @@ column and a label column) plus a flat `images/` folder rather than
 folder-per-class. `extract_landmarks.py` supports both layouts; use `--csv`
 if you get the CSV form.
 
-There is also a much larger, richer, academically-citable KSL dataset on
-Zenodo (DOI 10.5281/zenodo.14974973, CC BY 4.0): ~30,000 word-level video
-clips with full-body pose (33 keypoints, not just hands), from 685 signers.
-It's noted here as future work rather than used now — it's dynamic video +
-full-body pose, which doesn't fit the app's current hand-only,
-single-frame pipeline. Supporting it properly would mean adding body-pose
-sensing and a sequence model, a substantially bigger change.
+There are two more KSL sources from the Maseno University team (Maina,
+Wanzare, Obuhuma), verified 2026-09-23:
+
+- **`10.5281/zenodo.14338329`** — "KSL Pose Dataset". CC BY 4.0, `Pose
+  Data.zip` (1.5GB), **open access, no login needed**. MediaPipe Holistic
+  landmarks (body + hands + face) with stickman videos. This is the one
+  actually being integrated now — see the full-body/face pipeline extension
+  below.
+- `10.5281/zenodo.14974973` — "KSL Word Based Pose Dataset", much larger
+  (57GB this version, 420GB across all versions), same CC BY 4.0 license
+  but files require a Zenodo login/access request. Not yet pursued.
+
+(A stale note previously here claimed the second dataset was ~30k clips
+from 685 signers and openly downloadable — that was never actually
+verified against the source and was wrong; corrected after being caught.)
 
 ## 3. Real data: extract landmarks
 

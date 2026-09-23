@@ -6,14 +6,15 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 
 import 'hand_pose_matcher.dart';
 
-/// Which trained sign-language classifier to use. Each has its own bundled
-/// model + label file under assets/models/, produced by ml_training/ (see
-/// ml_training/README.md) — not by anything recorded on-device.
-enum SignLanguage { asl, ksl }
+/// Which trained sign-language classifier to use. KSL is the only supported
+/// vocabulary (ASL support was dropped per product decision — see
+/// ml_training/README.md for how the bundled model is produced). Kept as an
+/// enum rather than a bare constant so a second sign language can be added
+/// later without reshaping the classify() API.
+enum SignLanguage { ksl }
 
 extension on SignLanguage {
   String get assetPrefix => switch (this) {
-        SignLanguage.asl => 'asl_alphabet',
         SignLanguage.ksl => 'ksl_words',
       };
 }

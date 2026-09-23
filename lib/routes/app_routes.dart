@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../features/custom_signs/presentation/screens/custom_signs_screen.dart';
+import '../features/device_sync/presentation/screens/device_sync_screen.dart';
 import '../features/emergency_mode/presentation/screens/emergency_mode_screen.dart';
 import '../features/home/presentation/screens/home_screen.dart';
 import '../features/learning_module/presentation/screens/learning_module_screen.dart';
@@ -21,6 +22,7 @@ class AppRoutes {
   static const String signRecognition = '/sign-recognition';
   static const String voiceTranslation = '/voice-translation';
   static const String conversationMode = '/conversation-mode';
+  static const String deviceSync = '/device-sync';
   static const String emergencyMode = '/emergency-mode';
   static const String customSigns = '/custom-signs';
   static const String learningModule = '/learning-module';
@@ -34,6 +36,7 @@ class AppRoutes {
         signRecognition: (context) => const SignRecognitionScreen(),
         voiceTranslation: (context) => const VoiceTranslationScreen(),
         conversationMode: (context) => const ConversationScreen(),
+        deviceSync: (context) => const DeviceSyncScreen(),
         emergencyMode: (context) => const EmergencyModeScreen(),
         customSigns: (context) => const CustomSignsScreen(),
         learningModule: (context) => const LearningModuleScreen(),

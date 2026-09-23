@@ -49,3 +49,11 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // ContextCompat.registerReceiver(..., RECEIVER_NOT_EXPORTED) used by the
+    // emergency SMS delivery-confirmation channel needs core-ktx 1.9.0+;
+    // pinned explicitly rather than relying on whatever version the Flutter
+    // embedding happens to pull in transitively.
+    implementation("androidx.core:core-ktx:1.13.1")
+}

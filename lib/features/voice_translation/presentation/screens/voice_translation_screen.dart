@@ -6,6 +6,7 @@ import '../../../../core/services/settings_service.dart';
 import '../../../../core/services/stt_service.dart';
 import '../../../../core/services/tts_service.dart';
 import '../../../../core/utils/permission_primer.dart';
+import '../../../../core/utils/priority_languages.dart';
 import '../../../../routes/app_routes.dart';
 import '../../../../shared/widgets/app_background.dart';
 import '../../../../shared/widgets/pressable_scale.dart';
@@ -44,7 +45,7 @@ class _VoiceTranslationScreenState extends State<VoiceTranslationScreen> {
   }
 
   Future<void> _loadTtsLanguages() async {
-    final languages = await TtsService.instance.getAvailableLanguages();
+    final languages = sortByPriority(await TtsService.instance.getAvailableLanguages());
     if (!mounted) return;
     setState(() {
       _ttsLanguages = languages;
@@ -55,8 +56,25 @@ class _VoiceTranslationScreenState extends State<VoiceTranslationScreen> {
   }
 
   Future<void> _loadSttLocales() async {
-    final locales = await SttService.instance.getAvailableLocales();
+    final locales = sortByPriorityWith(
+      await SttService.instance.getAvailableLocales(),
+      (l) => l.localeId,
+    );
     if (mounted) setState(() => _sttLocales = locales);
+  }
+
+  Widget? _missingLanguagesHint(ColorScheme colorScheme, List<String> availableTags) {
+    if (availableTags.isEmpty) return null;
+    final missing = missingPriorityLanguages(availableTags);
+    if (missing.isEmpty) return null;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Text(
+        'Not available on this device\'s speech engine: '
+        '${missing.map((m) => m.displayName).join(', ')}.',
+        style: TextStyle(color: colorScheme.error, fontSize: 12),
+      ),
+    );
   }
 
   Future<void> _toggleListening() async {
@@ -142,7 +160,9 @@ class _VoiceTranslationScreenState extends State<VoiceTranslationScreen> {
               ],
               onChanged: (value) => setState(() => _selectedSttLocaleId = value),
             ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
+          _missingLanguagesHint(colorScheme, _sttLocales.map((l) => l.localeId).toList()) ??
+              const SizedBox.shrink(),
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
@@ -215,7 +235,9 @@ class _VoiceTranslationScreenState extends State<VoiceTranslationScreen> {
                 if (value != null) setState(() => _selectedTtsLanguage = value);
               },
             ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
+          _missingLanguagesHint(colorScheme, _ttsLanguages) ?? const SizedBox.shrink(),
+          const SizedBox(height: 4),
           TextField(
             controller: _textController,
             decoration: const InputDecoration(
@@ -308,6 +330,36 @@ class _VoiceTranslationScreenState extends State<VoiceTranslationScreen> {
                         const Expanded(
                           child: Text(
                             'Conversation Mode — translate between two people',
+                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        const Icon(Icons.arrow_forward, color: Colors.white, size: 18),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                PressableScale(
+                  borderRadius: BorderRadius.circular(18),
+                  onTap: () {
+                    SettingsService.instance.hapticTap();
+                    Navigator.of(context).pushNamed(AppRoutes.deviceSync);
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [colorScheme.primary, colorScheme.secondary],
+                      ),
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.bluetooth_connected, color: Colors.white),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Text(
+                            'Device Sync — connect two phones directly',
                             style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
                           ),
                         ),
