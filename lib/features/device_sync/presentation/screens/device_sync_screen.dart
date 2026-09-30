@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -18,6 +20,7 @@ import '../../../../shared/widgets/section_card.dart';
 
 const _myNameKey = 'device_sync_my_name';
 const _rememberedPeerKey = 'device_sync_remembered_peer';
+const _idleReminderDelay = Duration(minutes: 5);
 
 /// Real two-phone Conversation Mode: each person has the app on their own
 /// device, and this screen pairs the two directly (offline, no server) via
@@ -52,12 +55,16 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
   final List<_ConversationEntry> _log = [];
   bool _isListening = false;
   String _liveText = '';
+  final _typedController = TextEditingController();
+  bool _longConversationMode = false;
+  Timer? _idleTimer;
 
   @override
   void initState() {
     super.initState();
     _service.onStateChanged = _handleStateChanged;
     _service.onMessageReceived = _handleMessageReceived;
+    _service.onIncomingRequest = _handleIncomingRequest;
     _init();
   }
 
@@ -78,8 +85,24 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
       if (locales.isNotEmpty) _myLocale = locales.first.localeId;
     });
 
-    if (remembered != null) {
-      await _startPairing(onlyConnectToName: remembered);
+    // Become discoverable as soon as the screen opens — otherwise a phone
+    // just sitting on its own QR code (the "have the other person scan
+    // this" side) never calls startAdvertising and is invisible to the
+    // other phone's discovery, no matter what that other phone does. This
+    // does NOT actively hunt for/request connections to whoever it finds
+    // (see DeviceSyncService's class doc) — that only starts once there's
+    // a specific target, from a remembered device or a scanned code.
+    await _resumeDiscoverability();
+  }
+
+  /// Starts advertising (or, for a remembered peer, actively re-pairing)
+  /// so the phone is reachable again. Called on first opening the screen
+  /// and after a manual disconnect.
+  Future<void> _resumeDiscoverability() async {
+    if (_rememberedPeer != null) {
+      await _startPairing(onlyConnectToName: _rememberedPeer!);
+    } else {
+      await _startAdvertisingOnly();
     }
   }
 
@@ -92,7 +115,108 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
     });
     if (state == SyncConnectionState.connected) {
       SettingsService.instance.hapticSuccess();
+      _resetIdleTimer();
+    } else {
+      _idleTimer?.cancel();
     }
+    if (state == SyncConnectionState.disconnected) {
+      // An unexpected drop (peer went out of range, closed the app, etc.)
+      // — the manual Disconnect button resumes discoverability itself and
+      // doesn't reach here (see DeviceSyncService._onDisconnected's
+      // endpoint check), so this only covers the case nothing else does.
+      _resumeDiscoverability();
+    }
+  }
+
+  /// Restarts the 2-minute idle-disconnect reminder. Called on connect and
+  /// on any conversation activity (sending or receiving a message) so the
+  /// clock only really measures silence, not total call length. Disabled
+  /// entirely while Long conversation mode is on.
+  void _resetIdleTimer() {
+    _idleTimer?.cancel();
+    if (_state != SyncConnectionState.connected || _longConversationMode) return;
+    _idleTimer = Timer(_idleReminderDelay, _showIdleReminder);
+  }
+
+  void _showIdleReminder() {
+    if (!mounted || _state != SyncConnectionState.connected) return;
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Still connected'),
+        content: Text(
+          "It's been quiet for 5 minutes with ${_peerName ?? "the other phone"}. "
+          'Disconnect to save battery, or stay connected?',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _disconnect();
+            },
+            child: const Text('Disconnect'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _resetIdleTimer();
+            },
+            child: const Text('Stay connected'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _toggleLongConversationMode(bool value) {
+    setState(() => _longConversationMode = value);
+    if (value) {
+      _idleTimer?.cancel();
+    } else {
+      _resetIdleTimer();
+    }
+  }
+
+  Future<void> _disconnect() async {
+    _idleTimer?.cancel();
+    await _service.disconnect();
+    if (!mounted) return;
+    setState(() {
+      _peerName = null;
+      _log.clear();
+      _liveText = '';
+    });
+    await _resumeDiscoverability();
+  }
+
+  void _handleIncomingRequest(String endpointId, String peerName) {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('$peerName wants to connect'),
+        content: const Text(
+          'Only accept if you recognize this as the specific person/device you meant to pair with.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _service.declineConnection(endpointId);
+            },
+            child: const Text('Decline'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _service.approveConnection(endpointId);
+            },
+            child: const Text('Accept'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _handleMessageReceived(SyncMessage message) async {
@@ -112,6 +236,7 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
     }
     if (!mounted) return;
     setState(() => _log.add(_ConversationEntry(text: displayText, fromPeer: true)));
+    _resetIdleTimer();
     SettingsService.instance.hapticImpact();
     await TtsService.instance.speak(displayText, language: _myLocale);
   }
@@ -134,7 +259,16 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
     return true;
   }
 
-  Future<void> _startPairing({String? onlyConnectToName}) async {
+  Future<void> _startAdvertisingOnly() async {
+    final granted = await _requestSyncPermissions();
+    if (!granted) {
+      setState(() => _error = 'Nearby permissions denied.');
+      return;
+    }
+    await _service.startAdvertisingOnly(myDisplayName: _mySessionName);
+  }
+
+  Future<void> _startPairing({required String onlyConnectToName}) async {
     final granted = await _requestSyncPermissions();
     if (!granted) {
       setState(() => _error = 'Nearby permissions denied.');
@@ -148,6 +282,19 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
     await prefs.setString(_myNameKey, _nameController.text.trim());
     setState(() => _mySessionName = DeviceSyncService.generateSessionName(_nameController.text));
     SettingsService.instance.hapticTap();
+
+    // The QR code just changed to show the new name — re-advertise under
+    // it too, otherwise this phone keeps broadcasting its old name while
+    // displaying a QR nobody scanning it can actually find. Only safe to
+    // do while nothing's mid-handshake; connected/connecting/awaiting
+    // states aren't reachable from this screen anyway (the name field
+    // only shows before a connection exists).
+    if (_state == SyncConnectionState.idle ||
+        _state == SyncConnectionState.searching ||
+        _state == SyncConnectionState.failed ||
+        _state == SyncConnectionState.disconnected) {
+      await _startAdvertisingOnly();
+    }
   }
 
   Future<void> _scanToConnect() async {
@@ -206,16 +353,29 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
     setState(() => _isListening = false);
     if (text.trim().isEmpty) return;
     setState(() => _log.add(_ConversationEntry(text: text, fromPeer: false)));
+    _resetIdleTimer();
+    await _service.send(SyncMessage(text: text, locale: _myLocale));
+  }
+
+  Future<void> _sendTyped() async {
+    final text = _typedController.text.trim();
+    if (text.isEmpty) return;
+    _typedController.clear();
+    setState(() => _log.add(_ConversationEntry(text: text, fromPeer: false)));
+    _resetIdleTimer();
     await _service.send(SyncMessage(text: text, locale: _myLocale));
   }
 
   @override
   void dispose() {
+    _idleTimer?.cancel();
     _service.onStateChanged = null;
     _service.onMessageReceived = null;
+    _service.onIncomingRequest = null;
     _service.disconnect();
     SttService.instance.stopListening();
     _nameController.dispose();
+    _typedController.dispose();
     super.dispose();
   }
 
@@ -224,7 +384,9 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
       case SyncConnectionState.idle:
         return 'Not connected';
       case SyncConnectionState.searching:
-        return 'Searching for the other phone…';
+        return 'Waiting to connect — show your code, or scan theirs…';
+      case SyncConnectionState.awaitingApproval:
+        return '${_peerName ?? "A phone"} wants to connect…';
       case SyncConnectionState.connecting:
         return 'Connecting to ${_peerName ?? "device"}…';
       case SyncConnectionState.connected:
@@ -269,14 +431,26 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        TextField(
-                          controller: _nameController,
-                          decoration: const InputDecoration(
-                            labelText: 'Your name (shown to the other phone)',
-                            border: OutlineInputBorder(),
-                          ),
-                          onSubmitted: (_) => _saveName(),
-                          onEditingComplete: _saveName,
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _nameController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Your name (shown to the other phone)',
+                                  border: OutlineInputBorder(),
+                                ),
+                                onSubmitted: (_) => _saveName(),
+                                onEditingComplete: _saveName,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            FilledButton(
+                              onPressed: _saveName,
+                              child: const Text('Save'),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 16),
                         Text(
@@ -320,7 +494,7 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
                           const SizedBox(height: 12),
                           PressableScale(
                             borderRadius: BorderRadius.circular(12),
-                            onTap: () => _startPairing(onlyConnectToName: _rememberedPeer),
+                            onTap: () => _startPairing(onlyConnectToName: _rememberedPeer!),
                             child: Container(
                               padding: const EdgeInsets.symmetric(vertical: 14),
                               decoration: BoxDecoration(
@@ -340,12 +514,32 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
                   const SizedBox(height: 16),
                 ],
                 if (connected) ...[
+                  OutlinedButton.icon(
+                    onPressed: _disconnect,
+                    icon: const Icon(Icons.link_off),
+                    label: const Text('Disconnect'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: colorScheme.error,
+                      side: BorderSide(color: colorScheme.error),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Always connect to this device'),
                     subtitle: Text('Skip QR scanning next time you open Device Sync with ${_peerName ?? "this phone"}'),
                     value: _rememberThisDevice,
                     onChanged: _toggleRemember,
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Long conversation mode'),
+                    subtitle: const Text(
+                      "Turns off the 'still connected?' reminder — for a lecture or a long "
+                      "chat with natural pauses.",
+                    ),
+                    value: _longConversationMode,
+                    onChanged: _toggleLongConversationMode,
                   ),
                   const SizedBox(height: 8),
                   if (_locales.isNotEmpty)
@@ -396,6 +590,28 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _typedController,
+                          decoration: const InputDecoration(
+                            hintText: 'Type a message instead…',
+                            border: OutlineInputBorder(),
+                          ),
+                          textInputAction: TextInputAction.send,
+                          onSubmitted: (_) => _sendTyped(),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton.filled(
+                        onPressed: _sendTyped,
+                        icon: const Icon(Icons.send),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
                   Center(
                     child: PressableScale(
                       borderRadius: BorderRadius.circular(36),
@@ -431,8 +647,21 @@ class _ConversationEntry {
   const _ConversationEntry({required this.text, required this.fromPeer});
 }
 
-class _QrScannerScreen extends StatelessWidget {
+class _QrScannerScreen extends StatefulWidget {
   const _QrScannerScreen();
+
+  @override
+  State<_QrScannerScreen> createState() => _QrScannerScreenState();
+}
+
+class _QrScannerScreenState extends State<_QrScannerScreen> {
+  // MobileScanner calls onDetect once per processed camera frame, so a
+  // code that stays in view for even a fraction of a second fires this
+  // multiple times. Without this guard, a second detection arrives while
+  // the first pop's route transition is still in flight and pops again —
+  // dismissing the screen underneath (DeviceSyncScreen) along with the
+  // scanner, which tore down the sync attempt right after it started.
+  bool _handled = false;
 
   @override
   Widget build(BuildContext context) {
@@ -440,9 +669,11 @@ class _QrScannerScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('Scan their code')),
       body: MobileScanner(
         onDetect: (capture) {
+          if (_handled) return;
           for (final barcode in capture.barcodes) {
             final value = barcode.rawValue;
             if (value != null && value.isNotEmpty) {
+              _handled = true;
               Navigator.of(context).pop(value);
               return;
             }
