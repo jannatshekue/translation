@@ -3,13 +3,18 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
+import '../../../../core/profile/app_tools.dart';
 import '../../../../core/services/learning_progress_service.dart';
 import '../../../../core/services/settings_service.dart';
+import '../../../../core/theme/app_theme.dart';
 import '../../../../models/lesson.dart';
-import '../../../../shared/widgets/app_background.dart';
-import '../../../../shared/widgets/pressable_scale.dart';
+import '../../../../shared/widgets/action_tile.dart';
+import '../../../../shared/widgets/section_card.dart';
+import '../../../../shared/widgets/section_header.dart';
 import 'lesson_detail_screen.dart';
 
+/// The Learn tab: progress at a glance, the next lesson to take, every
+/// lesson in order, and a way into teaching the app signs of your own.
 class LearningModuleScreen extends StatefulWidget {
   const LearningModuleScreen({super.key});
 
@@ -40,76 +45,108 @@ class _LearningModuleScreenState extends State<LearningModuleScreen> {
     }
   }
 
+  Future<void> _open(Lesson lesson) async {
+    SettingsService.instance.hapticTap();
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => LessonDetailScreen(lesson: lesson)),
+    );
+    await _load();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final progress = _lessons.isEmpty ? 0.0 : _completedIds.length / _lessons.length;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    final done = _completedIds.length;
+    final total = _lessons.length;
+    final next = _lessons.where((l) => !_completedIds.contains(l.id)).firstOrNull;
 
     return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        title: const Text('Learning Module'),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-      ),
-      body: AppBackground(
-        child: SafeArea(
-          child: _lessons.isEmpty
-              ? const Center(child: CircularProgressIndicator())
-              : ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-                  children: [
-                    Material(
-                      color: colorScheme.surface,
-                      borderRadius: BorderRadius.circular(20),
-                      elevation: 2,
-                      shadowColor: Colors.black.withValues(alpha: 0.15),
-                      child: Padding(
-                        padding: const EdgeInsets.all(18),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+      body: SafeArea(
+        bottom: false,
+        child: _lessons.isEmpty
+            ? const Center(child: CircularProgressIndicator())
+            : ListView(
+                padding: const EdgeInsets.fromLTRB(AppTheme.screenPadding, 16, AppTheme.screenPadding, 28),
+                children: [
+                  Text('Learn', style: theme.textTheme.headlineMedium),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Learn each sign, then practise it with your camera.',
+                    style: theme.textTheme.bodyLarge?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                  const SizedBox(height: 20),
+                  SectionCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
                           children: [
-                            Text(
-                              '${_completedIds.length} of ${_lessons.length} signs practiced',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleMedium
-                                  ?.copyWith(fontWeight: FontWeight.w700),
-                            ),
-                            const SizedBox(height: 10),
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: LinearProgressIndicator(
-                                value: progress,
-                                minHeight: 8,
-                                backgroundColor: colorScheme.surfaceContainerHighest,
+                            Expanded(
+                              child: Text(
+                                done == total ? 'All signs practised' : '$done of $total signs practised',
+                                style: theme.textTheme.titleMedium,
                               ),
+                            ),
+                            Text(
+                              '${total == 0 ? 0 : (done * 100 / total).round()}%',
+                              style: theme.textTheme.titleMedium?.copyWith(color: scheme.primary),
                             ),
                           ],
                         ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    for (int index = 0; index < _lessons.length; index++) ...[
-                      if (index > 0) const SizedBox(height: 10),
-                      _LessonRow(
-                        lesson: _lessons[index],
-                        index: index,
-                        isCompleted: _completedIds.contains(_lessons[index].id),
-                        onTap: () async {
-                          SettingsService.instance.hapticTap();
-                          await Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => LessonDetailScreen(lesson: _lessons[index]),
+                        const SizedBox(height: 12),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: LinearProgressIndicator(value: total == 0 ? 0 : done / total, minHeight: 8),
+                        ),
+                        if (next != null) ...[
+                          const SizedBox(height: 16),
+                          SizedBox(
+                            width: double.infinity,
+                            child: FilledButton.icon(
+                              onPressed: () => _open(next),
+                              icon: const Icon(Icons.play_arrow_rounded),
+                              label: Text(done == 0 ? 'Start: ${next.title}' : 'Continue: ${next.title}'),
                             ),
-                          );
-                          await _load();
-                        },
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  const SectionHeader('Lessons'),
+                  SectionCard(
+                    padding: EdgeInsets.zero,
+                    child: Column(
+                      children: [
+                        for (var i = 0; i < _lessons.length; i++) ...[
+                          if (i > 0) Divider(height: 1, indent: 64, color: scheme.outlineVariant),
+                          _LessonRow(
+                            lesson: _lessons[i],
+                            number: i + 1,
+                            isCompleted: _completedIds.contains(_lessons[i].id),
+                            onTap: () => _open(_lessons[i]),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  const SectionHeader('Make it yours'),
+                  ActionGroup(
+                    children: [
+                      ActionTile(
+                        icon: AppTool.customSigns.icon,
+                        title: AppTool.customSigns.title,
+                        subtitle: AppTool.customSigns.subtitle,
+                        color: AppTool.customSigns.color,
+                        onTap: () => AppTool.customSigns.open(context),
                       ),
                     ],
-                  ],
-                ),
-        ),
+                  ),
+                ],
+              ),
       ),
     );
   }
@@ -117,56 +154,44 @@ class _LearningModuleScreenState extends State<LearningModuleScreen> {
 
 class _LessonRow extends StatelessWidget {
   final Lesson lesson;
-  final int index;
+  final int number;
   final bool isCompleted;
   final VoidCallback onTap;
 
   const _LessonRow({
     required this.lesson,
-    required this.index,
+    required this.number,
     required this.isCompleted,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
 
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: Duration(milliseconds: 260 + index * 40),
-      curve: Curves.easeOutCubic,
-      builder: (context, value, child) => Opacity(
-        opacity: value,
-        child: Transform.translate(offset: Offset(0, (1 - value) * 14), child: child),
-      ),
-      child: PressableScale(
-        borderRadius: BorderRadius.circular(18),
-        onTap: onTap,
-        child: Material(
-          color: colorScheme.surface,
-          borderRadius: BorderRadius.circular(18),
-          elevation: 1,
-          shadowColor: Colors.black.withValues(alpha: 0.1),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Row(
-              children: [
-                Icon(
-                  isCompleted ? Icons.check_circle : Icons.circle_outlined,
-                  color: isCompleted ? Colors.green : colorScheme.onSurfaceVariant,
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Text(
-                    lesson.title,
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
-                  ),
-                ),
-                Icon(Icons.chevron_right, color: colorScheme.onSurfaceVariant),
-              ],
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isCompleted ? AppTheme.success : scheme.surfaceContainerHigh,
+              ),
+              child: isCompleted
+                  ? const Icon(Icons.check, size: 18, color: Colors.white)
+                  : Text('$number', style: theme.textTheme.labelLarge),
             ),
-          ),
+            const SizedBox(width: 16),
+            Expanded(child: Text(lesson.title, style: theme.textTheme.titleMedium)),
+            Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
+          ],
         ),
       ),
     );

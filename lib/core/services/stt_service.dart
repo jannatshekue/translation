@@ -1,3 +1,4 @@
+import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
 /// Wraps the on-device (offline) speech recognizer. This is the default path
@@ -29,6 +30,16 @@ class SttService {
     final locales = await _speech.locales();
     _cachedLocales = locales;
     return locales;
+  }
+
+  /// Like [getAvailableLocales], but never triggers Android's microphone
+  /// prompt: starting the recognizer is what asks for the microphone, so
+  /// calling it when a screen merely opens would pop the system prompt
+  /// before the app has explained why. Returns an empty list until the
+  /// microphone has been allowed; screens reload after they obtain it.
+  Future<List<LocaleName>> getAvailableLocalesIfPermitted() async {
+    if (!await Permission.microphone.isGranted) return const [];
+    return getAvailableLocales();
   }
 
   /// Starts listening. Pass [localeId] (from [getAvailableLocales]) to

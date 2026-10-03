@@ -1,318 +1,458 @@
-import 'dart:ui';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart' show rootBundle;
 
+import '../../../../core/profile/app_tools.dart';
+import '../../../../core/profile/profile_experience.dart';
+import '../../../../core/services/app_events.dart';
+import '../../../../core/services/database_service.dart';
+import '../../../../core/services/learning_progress_service.dart';
 import '../../../../core/services/settings_service.dart';
+import '../../../../core/services/starter_phrases.dart';
+import '../../../../core/services/tts_service.dart';
+import '../../../../core/theme/app_theme.dart';
+import '../../../../models/saved_phrase.dart';
 import '../../../../routes/app_routes.dart';
+import '../../../../shared/widgets/action_tile.dart';
+import '../../../../shared/widgets/pressable_scale.dart';
+import '../../../../shared/widgets/profile_sheet.dart';
+import '../../../../shared/widgets/section_card.dart';
+import '../../../../shared/widgets/section_header.dart';
+import '../../../shell/presentation/screens/main_shell.dart';
 
-class _FeatureEntry {
-  final String title;
-  final String subtitle;
-  final IconData icon;
-  final Color color;
-  final String? route;
-
-  const _FeatureEntry(this.title, this.subtitle, this.icon, this.color, {this.route});
-}
-
-const _hero = _FeatureEntry(
-  'Sign Recognition',
-  'Point your camera and start signing',
-  Icons.front_hand,
-  Colors.deepPurple,
-  route: AppRoutes.signRecognition,
-);
-
-const _voiceTranslation = _FeatureEntry(
-  'Voice Translation',
-  'Speech, text & conversation mode',
-  Icons.mic,
-  Colors.teal,
-  route: AppRoutes.voiceTranslation,
-);
-const _customSigns = _FeatureEntry(
-  'Custom Signs',
-  'Record your own signs',
-  Icons.add_reaction,
-  Colors.orange,
-  route: AppRoutes.customSigns,
-);
-const _learningModule = _FeatureEntry(
-  'Learning Module',
-  'Practice common signs',
-  Icons.school,
-  Colors.blue,
-  route: AppRoutes.learningModule,
-);
-const _savedPhrases = _FeatureEntry(
-  'Saved Phrases',
-  'Quick-access phrases',
-  Icons.bookmark,
-  Colors.pink,
-  route: AppRoutes.savedPhrases,
-);
-const _emergencyMode = _FeatureEntry(
-  'Emergency Mode',
-  'One-tap alert with location',
-  Icons.emergency,
-  Colors.red,
-  route: AppRoutes.emergencyMode,
-);
-const _settings = _FeatureEntry(
-  'Settings',
-  'Appearance & accessibility',
-  Icons.settings,
-  Colors.blueGrey,
-  route: AppRoutes.settings,
-);
-
-/// Same 6 features for everyone, just reordered so the most relevant tools
-/// for the active accessibility profile surface first. Nothing is ever
-/// hidden — every feature remains one tap away regardless of profile.
-List<_FeatureEntry> _featuresFor(UserProfile? profile) {
-  switch (profile) {
-    case UserProfile.hearingImpaired:
-    case UserProfile.speechImpaired:
-      return [_customSigns, _learningModule, _voiceTranslation, _savedPhrases, _emergencyMode, _settings];
-    case UserProfile.normal:
-    case null:
-      return [_voiceTranslation, _customSigns, _learningModule, _savedPhrases, _emergencyMode, _settings];
-  }
-}
-
-void _open(BuildContext context, _FeatureEntry feature) {
-  SettingsService.instance.hapticTap();
-  final route = feature.route;
-  if (route != null) {
-    Navigator.of(context).pushNamed(route);
-    return;
-  }
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text('${feature.title} screen not built yet')),
-  );
-}
-
-class HomeScreen extends StatelessWidget {
+/// Home: the single most useful thing to do right now (a hero action chosen
+/// by the person's profile), a one-tap route to the emergency alert, and
+/// shortcuts to the rest — ordered for how this person communicates.
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+  State<HomeScreen> createState() => _HomeScreenState();
+}
 
-    return Scaffold(
-      body: AnimatedBuilder(
-        animation: SettingsService.instance,
-        builder: (context, _) => _buildBody(context, colorScheme),
-      ),
-    );
+class _HomeScreenState extends State<HomeScreen> {
+  List<SavedPhrase> _phrases = [];
+  int _lessonsDone = 0;
+  int _lessonsTotal = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    SettingsService.instance.addListener(_onSettingsChanged);
+    AppEvents.phrasesChanged.addListener(_loadSnapshot);
+    AppEvents.progressChanged.addListener(_loadSnapshot);
+    // Everyone gets the everyday phrases once; then load whatever is saved.
+    StarterPhrases.seedIfNeeded().whenComplete(_loadSnapshot);
   }
 
-  Widget _buildBody(BuildContext context, ColorScheme colorScheme) {
-    final features = _featuresFor(SettingsService.instance.userProfile);
+  @override
+  void dispose() {
+    SettingsService.instance.removeListener(_onSettingsChanged);
+    AppEvents.phrasesChanged.removeListener(_loadSnapshot);
+    AppEvents.progressChanged.removeListener(_loadSnapshot);
+    super.dispose();
+  }
 
-    return Stack(
-        children: [
-          // Base gradient.
-          DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  colorScheme.surface,
-                  Color.alphaBlend(colorScheme.primary.withValues(alpha: 0.10), colorScheme.surface),
-                ],
-              ),
+  void _onSettingsChanged() {
+    if (!mounted) return;
+    setState(() {});
+    _loadSnapshot();
+  }
+
+  Future<void> _loadSnapshot() async {
+    try {
+      final done = await LearningProgressService.instance.getCompletedLessonIds();
+      final raw = await rootBundle.loadString('assets/lessons/lessons.json');
+      final total = (jsonDecode(raw) as List<dynamic>).length;
+      final phrases =
+          _showPhrases ? await DatabaseService.instance.getSavedPhrases() : <SavedPhrase>[];
+      if (!mounted) return;
+      setState(() {
+        _lessonsDone = done.length;
+        _lessonsTotal = total;
+        _phrases = phrases;
+      });
+    } catch (_) {
+      // Shortcuts simply stay empty if storage isn't available.
+    }
+  }
+
+  /// Quick phrases show by default where they matter most (people who
+  /// communicate by typing or text); anyone else turns them on by choice.
+  bool get _showPhrases {
+    final choice = SettingsService.instance.quickPhrasesOnHome;
+    if (choice != null) return choice;
+    return ProfileExperience.of(SettingsService.instance.userProfile).showQuickPhrases;
+  }
+
+  String get _greeting {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Good morning';
+    if (hour < 17) return 'Good afternoon';
+    return 'Good evening';
+  }
+
+  Future<void> _switchProfile() async {
+    await showProfileSheet(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final experience = ProfileExperience.of(SettingsService.instance.userProfile);
+
+    final listedTools = experience.toolOrder.take(5).toList();
+
+    final sections = <Widget>[
+      _Header(
+        greeting: _greeting,
+        profileLabel: experience.label,
+        onProfileTap: _switchProfile,
+        onSettingsTap: () {
+          SettingsService.instance.hapticTap();
+          Navigator.of(context).pushNamed(AppRoutes.settings);
+        },
+      ),
+      const SizedBox(height: 20),
+      _HeroCard(experience: experience),
+      const SizedBox(height: 14),
+      _EmergencyStrip(onTap: () => ShellNavigation.goTo(ShellNavigation.emergency)),
+      if (_showPhrases) ...[
+        const SizedBox(height: 24),
+        SectionHeader(
+          'Quick phrases',
+          actionLabel: 'Manage',
+          onAction: () => Navigator.of(context).pushNamed(AppRoutes.savedPhrases),
+        ),
+        if (_phrases.isNotEmpty)
+          SizedBox(
+            height: 46,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: _phrases.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
+              itemBuilder: (context, index) => _PhraseChip(text: _phrases[index].text),
             ),
-            child: const SizedBox.expand(),
-          ),
-          // Soft decorative color blobs for a less flat, more modern feel.
-          Positioned(
-            top: -90,
-            right: -70,
-            child: _blob(colorScheme.primary.withValues(alpha: 0.35), 260),
-          ),
-          Positioned(
-            bottom: -60,
-            left: -80,
-            child: _blob(colorScheme.tertiary.withValues(alpha: 0.28), 240),
-          ),
-          SafeArea(
-            child: CustomScrollView(
-              slivers: [
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Welcome',
-                          style: Theme.of(context)
-                              .textTheme
-                              .headlineMedium
-                              ?.copyWith(fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Sign & Voice Translator',
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodyLarge
-                              ?.copyWith(color: colorScheme.onSurfaceVariant),
-                        ),
-                      ],
-                    ),
+          )
+        else
+          SectionCard(
+            onTap: () => Navigator.of(context).pushNamed(AppRoutes.savedPhrases),
+            child: Row(
+              children: [
+                Icon(Icons.bookmark_add_outlined, color: scheme.primary),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text(
+                    'No quick phrases yet. Tap to add the ones you say most.',
+                    style: theme.textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
                   ),
                 ),
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
-                  sliver: SliverToBoxAdapter(child: _HeroCard(feature: _hero)),
-                ),
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 4),
-                  sliver: SliverToBoxAdapter(
-                    child: Text(
-                      'More tools',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w700,
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                    ),
-                  ),
-                ),
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-                  sliver: SliverGrid(
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2,
-                      mainAxisSpacing: 14,
-                      crossAxisSpacing: 14,
-                      childAspectRatio: 0.98,
-                    ),
-                    delegate: SliverChildBuilderDelegate(
-                      (context, index) => _FeatureTile(feature: features[index], index: index),
-                      childCount: features.length,
-                    ),
-                  ),
-                ),
+                Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
               ],
             ),
           ),
-        ],
-    );
-  }
-
-  static Widget _blob(Color color, double size) {
-    return IgnorePointer(
-      child: ImageFiltered(
-        imageFilter: ImageFilter.blur(sigmaX: 60, sigmaY: 60),
-        child: Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
+      ],
+      const SizedBox(height: 24),
+      SectionHeader(
+        'Your tools',
+        actionLabel: 'See all',
+        onAction: () => ShellNavigation.goTo(ShellNavigation.communicate),
       ),
-    );
-  }
-}
-
-/// Large, prominent entry point for the app's flagship feature — the clear
-/// call-to-action rather than one row among equals.
-class _HeroCard extends StatefulWidget {
-  final _FeatureEntry feature;
-
-  const _HeroCard({required this.feature});
-
-  @override
-  State<_HeroCard> createState() => _HeroCardState();
-}
-
-class _HeroCardState extends State<_HeroCard> {
-  bool _pressed = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 380),
-      curve: Curves.easeOutCubic,
-      builder: (context, value, child) => Opacity(
-        opacity: value,
-        child: Transform.translate(offset: Offset(0, (1 - value) * 16), child: child),
-      ),
-      child: AnimatedScale(
-        scale: _pressed ? 0.96 : 1.0,
-        duration: const Duration(milliseconds: 110),
-        curve: Curves.easeOut,
-        child: Material(
-          borderRadius: BorderRadius.circular(24),
-          clipBehavior: Clip.antiAlias,
-          elevation: _pressed ? 1 : 6,
-          shadowColor: colorScheme.primary.withValues(alpha: 0.4),
-          child: Ink(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [colorScheme.primary, colorScheme.tertiary],
-              ),
+      ActionGroup(
+        children: [
+          for (final tool in listedTools)
+            ActionTile(
+              icon: tool.icon,
+              title: tool.title,
+              subtitle: tool.subtitle,
+              color: tool.color,
+              recommended: experience.recommended.contains(tool),
+              onTap: () => tool.open(context),
             ),
-            child: InkWell(
-              splashColor: Colors.white.withValues(alpha: 0.15),
-              highlightColor: Colors.white.withValues(alpha: 0.08),
-              onTap: () => _open(context, widget.feature),
-              onTapDown: (_) => setState(() => _pressed = true),
-              onTapUp: (_) => setState(() => _pressed = false),
-              onTapCancel: () => setState(() => _pressed = false),
-              child: Padding(
-                padding: const EdgeInsets.all(22),
-                child: Row(
+        ],
+      ),
+      if (!_showPhrases) ...[
+        const SizedBox(height: 12),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: () {
+              SettingsService.instance.hapticTap();
+              SettingsService.instance.setQuickPhrasesOnHome(true);
+            },
+            icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+            label: const Text('Show quick phrases on Home'),
+          ),
+        ),
+      ],
+      if (_lessonsTotal > 0) ...[
+        const SizedBox(height: 24),
+        const SectionHeader('Keep learning'),
+        SectionCard(
+          onTap: () => ShellNavigation.goTo(ShellNavigation.learn),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 52,
+                height: 52,
+                child: Stack(
+                  alignment: Alignment.center,
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.18),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Icon(widget.feature.icon, color: Colors.white, size: 32),
-                    ),
-                    const SizedBox(width: 18),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            widget.feature.title,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            widget.feature.subtitle,
-                            style: TextStyle(color: Colors.white.withValues(alpha: 0.9), fontSize: 13),
-                          ),
-                        ],
+                    SizedBox(
+                      width: 52,
+                      height: 52,
+                      child: CircularProgressIndicator(
+                        value: _lessonsDone / _lessonsTotal,
+                        strokeWidth: 5,
+                        strokeCap: StrokeCap.round,
+                        backgroundColor: scheme.surfaceContainerHigh,
                       ),
                     ),
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.2),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.arrow_forward, color: Colors.white, size: 20),
+                    Text(
+                      '$_lessonsDone/$_lessonsTotal',
+                      style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w700),
                     ),
                   ],
                 ),
               ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _lessonsDone == 0
+                          ? 'Start your first lesson'
+                          : '$_lessonsDone of $_lessonsTotal signs practised',
+                      style: theme.textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Short lessons with camera practice',
+                      style: theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
+            ],
+          ),
+        ),
+      ],
+    ];
+
+    return Scaffold(
+      body: SafeArea(
+        bottom: false,
+        child: ListView.builder(
+          padding: const EdgeInsets.fromLTRB(AppTheme.screenPadding, 16, AppTheme.screenPadding, 28),
+          itemCount: sections.length,
+          itemBuilder: (context, index) => _FadeIn(index: index, child: sections[index]),
+        ),
+      ),
+    );
+  }
+}
+
+/// Gentle staggered entrance so the screen settles in rather than popping.
+class _FadeIn extends StatelessWidget {
+  final int index;
+  final Widget child;
+
+  const _FadeIn({required this.index, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: Duration(milliseconds: 280 + index.clamp(0, 6) * 50),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, child) => Opacity(
+        opacity: value,
+        child: Transform.translate(offset: Offset(0, (1 - value) * 14), child: child),
+      ),
+      child: child,
+    );
+  }
+}
+
+class _Header extends StatelessWidget {
+  final String greeting;
+  final String profileLabel;
+  final VoidCallback onProfileTap;
+  final VoidCallback onSettingsTap;
+
+  const _Header({
+    required this.greeting,
+    required this.profileLabel,
+    required this.onProfileTap,
+    required this.onSettingsTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                greeting,
+                style: theme.textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 2),
+              Text('Sign & Voice Translator', style: theme.textTheme.headlineSmall),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(20),
+                  onTap: onProfileTap,
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
+                    decoration: BoxDecoration(
+                      color: scheme.primaryContainer.withValues(alpha: 0.7),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.person_outline, size: 16, color: scheme.onPrimaryContainer),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            profileLabel,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              color: scheme.onPrimaryContainer,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        Icon(Icons.expand_more, size: 18, color: scheme.onPrimaryContainer),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        IconButton.filledTonal(
+          tooltip: 'Settings',
+          onPressed: onSettingsTap,
+          icon: const Icon(Icons.settings_outlined),
+        ),
+      ],
+    );
+  }
+}
+
+class _HeroCard extends StatelessWidget {
+  final ProfileExperience experience;
+
+  const _HeroCard({required this.experience});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return PressableScale(
+      borderRadius: BorderRadius.circular(28),
+      onTap: () => experience.openHero(context),
+      child: Container(
+        padding: const EdgeInsets.all(22),
+        decoration: BoxDecoration(
+          gradient: AppTheme.heroGradient(context),
+          borderRadius: BorderRadius.circular(28),
+          boxShadow: [
+            BoxShadow(
+              color: AppTheme.navy.withValues(alpha: 0.28),
+              blurRadius: 24,
+              offset: const Offset(0, 10),
             ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(28),
+          child: Stack(
+            children: [
+              Positioned(
+                right: -18,
+                top: -10,
+                child: Icon(
+                  experience.heroIcon,
+                  size: 120,
+                  color: Colors.white.withValues(alpha: 0.10),
+                ),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      'RECOMMENDED FOR YOU',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.8,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    experience.heroTitle,
+                    style: theme.textTheme.headlineMedium?.copyWith(color: Colors.white),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    experience.heroSubtitle,
+                    style: theme.textTheme.bodyLarge?.copyWith(color: Colors.white.withValues(alpha: 0.88)),
+                  ),
+                  const SizedBox(height: 20),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(experience.heroIcon, size: 20, color: AppTheme.navy),
+                        const SizedBox(width: 8),
+                        // Flexible so the label wraps instead of overflowing
+                        // when the person has chosen a very large text size.
+                        Flexible(
+                          child: Text(
+                            experience.heroCta,
+                            style: theme.textTheme.labelLarge?.copyWith(
+                              color: AppTheme.navy,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        const Icon(Icons.arrow_forward, size: 18, color: AppTheme.navy),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
         ),
       ),
@@ -320,88 +460,85 @@ class _HeroCardState extends State<_HeroCard> {
   }
 }
 
-class _FeatureTile extends StatefulWidget {
-  final _FeatureEntry feature;
-  final int index;
+class _EmergencyStrip extends StatelessWidget {
+  final VoidCallback onTap;
 
-  const _FeatureTile({required this.feature, required this.index});
-
-  @override
-  State<_FeatureTile> createState() => _FeatureTileState();
-}
-
-class _FeatureTileState extends State<_FeatureTile> {
-  bool _pressed = false;
+  const _EmergencyStrip({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final feature = widget.feature;
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
 
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: Duration(milliseconds: 320 + widget.index * 60),
-      curve: Curves.easeOutCubic,
-      builder: (context, value, child) => Opacity(
-        opacity: value,
-        child: Transform.translate(offset: Offset(0, (1 - value) * 18), child: child),
-      ),
-      child: AnimatedScale(
-        scale: _pressed ? 0.93 : 1.0,
-        duration: const Duration(milliseconds: 100),
-        curve: Curves.easeOut,
-        child: Material(
-          color: colorScheme.surface,
-          borderRadius: BorderRadius.circular(20),
-          elevation: _pressed ? 0 : 2,
-          shadowColor: Colors.black.withValues(alpha: 0.15),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(20),
-            splashColor: feature.color.withValues(alpha: 0.18),
-            highlightColor: feature.color.withValues(alpha: 0.10),
-            onTap: () {
-              HapticFeedback.selectionClick();
-              _open(context, feature);
-            },
-            onTapDown: (_) => setState(() => _pressed = true),
-            onTapUp: (_) => setState(() => _pressed = false),
-            onTapCancel: () => setState(() => _pressed = false),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: feature.color.withValues(alpha: 0.16),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Icon(feature.icon, color: feature.color, size: 24),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    feature.title,
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleSmall
-                        ?.copyWith(fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    feature.subtitle,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodySmall
-                        ?.copyWith(color: colorScheme.onSurfaceVariant),
-                  ),
-                ],
-              ),
+    return SectionCard(
+      onTap: () {
+        SettingsService.instance.hapticTap();
+        onTap();
+      },
+      color: AppTheme.emergency.withValues(alpha: 0.07),
+      borderColor: AppTheme.emergency.withValues(alpha: 0.35),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: const BoxDecoration(color: AppTheme.emergency, shape: BoxShape.circle),
+            child: const Icon(Icons.emergency, color: Colors.white, size: 22),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Emergency alert', style: theme.textTheme.titleMedium),
+                const SizedBox(height: 2),
+                Text(
+                  'Send your location to your contacts',
+                  style: theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                ),
+              ],
             ),
           ),
+          Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
+        ],
+      ),
+    );
+  }
+}
+
+class _PhraseChip extends StatelessWidget {
+  final String text;
+
+  const _PhraseChip({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return PressableScale(
+      borderRadius: BorderRadius.circular(23),
+      onTap: () {
+        SettingsService.instance.hapticImpact();
+        TtsService.instance.speak(text);
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: scheme.surface,
+          borderRadius: BorderRadius.circular(23),
+          border: Border.all(color: scheme.outlineVariant),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.volume_up_outlined, size: 18, color: scheme.primary),
+            const SizedBox(width: 8),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 220),
+              child: Text(text, maxLines: 1, overflow: TextOverflow.ellipsis),
+            ),
+          ],
         ),
       ),
     );

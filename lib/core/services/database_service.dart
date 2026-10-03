@@ -4,6 +4,8 @@ import 'package:sqflite/sqflite.dart';
 import '../../models/custom_sign.dart';
 import '../../models/saved_phrase.dart';
 
+import 'app_events.dart';
+
 class DatabaseService {
   DatabaseService._internal();
 
@@ -64,12 +66,14 @@ class DatabaseService {
     await db.delete('custom_signs', where: 'id = ?', whereArgs: [id]);
   }
 
-  Future<int> insertSavedPhrase(String text) async {
+  Future<int> insertSavedPhrase(String text, {DateTime? createdAt}) async {
     final db = await database;
-    return db.insert('saved_phrases', {
+    final id = await db.insert('saved_phrases', {
       'text': text,
-      'created_at': DateTime.now().millisecondsSinceEpoch,
+      'created_at': (createdAt ?? DateTime.now()).millisecondsSinceEpoch,
     });
+    AppEvents.notifyPhrasesChanged();
+    return id;
   }
 
   Future<List<SavedPhrase>> getSavedPhrases() async {
@@ -78,9 +82,23 @@ class DatabaseService {
     return rows.map(SavedPhrase.fromMap).toList();
   }
 
+  /// Moves a saved phrase within the newest-first list by changing its
+  /// timestamp.
+  Future<void> setSavedPhraseTime(int id, DateTime createdAt) async {
+    final db = await database;
+    await db.update(
+      'saved_phrases',
+      {'created_at': createdAt.millisecondsSinceEpoch},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    AppEvents.notifyPhrasesChanged();
+  }
+
   Future<void> deleteSavedPhrase(int id) async {
     final db = await database;
     await db.delete('saved_phrases', where: 'id = ?', whereArgs: [id]);
+    AppEvents.notifyPhrasesChanged();
   }
 
   Future<void> close() async {

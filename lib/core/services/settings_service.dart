@@ -27,6 +27,7 @@ class SettingsService extends ChangeNotifier {
   static const _nightStartMinutesKey = 'settings_night_start_minutes';
   static const _userProfileKey = 'settings_user_profile';
   static const _signLanguageKey = 'settings_sign_language';
+  static const _quickPhrasesKey = 'settings_quick_phrases_home';
 
   double textScale = 1.0;
   bool highContrast = false;
@@ -36,6 +37,10 @@ class SettingsService extends ChangeNotifier {
 
   /// Null until the user picks one on first run (see onboarding).
   UserProfile? userProfile;
+
+  /// Whether Home shows the quick-phrase row. Null means "no choice made":
+  /// follow the profile's default. Set from Settings or Home's small button.
+  bool? quickPhrasesOnHome;
 
   /// Which trained sign classifier Sign Recognition prefers. Only takes
   /// effect once that language's model is actually bundled (see
@@ -83,6 +88,7 @@ class SettingsService extends ChangeNotifier {
     final profileIndex = prefs.getInt(_userProfileKey);
     userProfile = profileIndex == null ? null : UserProfile.values[profileIndex];
     signLanguage = SignLanguage.values[prefs.getInt(_signLanguageKey) ?? SignLanguage.ksl.index];
+    quickPhrasesOnHome = prefs.getBool(_quickPhrasesKey);
     _syncAutoThemeTimer();
     notifyListeners();
   }
@@ -102,11 +108,20 @@ class SettingsService extends ChangeNotifier {
       case UserProfile.hearingImpaired:
         await setFlashAlertsEnabled(true);
         await setVibrationEnabled(true);
+        // Captions are the main thing this person reads — start a notch larger.
+        if (textScale == 1.0) await setTextScale(1.1);
       case UserProfile.speechImpaired:
         await setVibrationEnabled(true);
       case UserProfile.normal:
         break;
     }
+  }
+
+  Future<void> setQuickPhrasesOnHome(bool value) async {
+    quickPhrasesOnHome = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_quickPhrasesKey, value);
   }
 
   Future<void> setSignLanguage(SignLanguage value) async {

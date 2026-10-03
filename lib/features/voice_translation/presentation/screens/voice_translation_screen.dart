@@ -1,23 +1,28 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show SystemChannels;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
+import '../../../../core/profile/app_tools.dart';
+import '../../../../core/profile/profile_experience.dart';
+import '../../../../core/services/database_service.dart';
 import '../../../../core/services/settings_service.dart';
 import '../../../../core/services/stt_service.dart';
 import '../../../../core/services/tts_service.dart';
-import '../../../../core/utils/permission_primer.dart';
+import '../../../../core/theme/app_theme.dart';
+import '../../../../core/utils/app_permissions.dart';
 import '../../../../core/utils/priority_languages.dart';
-import '../../../../routes/app_routes.dart';
-import '../../../../shared/widgets/app_background.dart';
+import '../../../../models/saved_phrase.dart';
 import '../../../../shared/widgets/pressable_scale.dart';
-import '../../../../shared/widgets/section_card.dart';
-import 'conversation_screen.dart';
+import '../../../../shared/widgets/section_header.dart';
 
-/// Single-user speech-to-text and text-to-speech, each with its own language
-/// picker — for transcribing your own speech or reading text aloud. Both
-/// directions work fully offline via on-device recognition and synthesis.
-/// For translating between two people speaking different languages, see
-/// [ConversationScreen].
+/// Speech ↔ text for one person, two clearly separated halves:
+///  * Listen — live captions of what's being said (speech to text).
+///  * Speak — type something and the phone says it aloud (text to speech).
+///
+/// Which half opens first, and whether the mic or the keyboard starts
+/// straight away, is decided by the person's profile (see
+/// [ProfileExperience]). Both halves work fully offline.
 class VoiceTranslationScreen extends StatefulWidget {
   const VoiceTranslationScreen({super.key});
 
@@ -27,6 +32,11 @@ class VoiceTranslationScreen extends StatefulWidget {
 
 class _VoiceTranslationScreenState extends State<VoiceTranslationScreen> {
   final TextEditingController _textController = TextEditingController();
+  final FocusNode _textFocus = FocusNode();
+
+  late VoiceMode _mode;
+  bool _argsRead = false;
+
   bool _isListening = false;
   String _recognizedText = '';
   String _status = '';
@@ -37,11 +47,36 @@ class _VoiceTranslationScreenState extends State<VoiceTranslationScreen> {
   List<String> _ttsLanguages = [];
   String _selectedTtsLanguage = 'en-US';
 
+  List<SavedPhrase> _phrases = [];
+
   @override
   void initState() {
     super.initState();
+    _mode = ProfileExperience.of(SettingsService.instance.userProfile).voiceMode;
     _loadTtsLanguages();
     _loadSttLocales();
+    _loadPhrases();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_argsRead) return;
+    _argsRead = true;
+    final args = ModalRoute.of(context)?.settings.arguments;
+    if (args is VoiceScreenArgs) {
+      _mode = args.mode;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (args.autoListen) _toggleListening();
+        if (args.autoFocusTyping) {
+          _textFocus.requestFocus();
+          // Focus alone doesn't always raise the keyboard on a screen that
+          // has just opened; ask for it explicitly.
+          SystemChannels.textInput.invokeMethod<void>('TextInput.show');
+        }
+      });
+    }
   }
 
   Future<void> _loadTtsLanguages() async {
@@ -57,10 +92,19 @@ class _VoiceTranslationScreenState extends State<VoiceTranslationScreen> {
 
   Future<void> _loadSttLocales() async {
     final locales = sortByPriorityWith(
-      await SttService.instance.getAvailableLocales(),
+      await SttService.instance.getAvailableLocalesIfPermitted(),
       (l) => l.localeId,
     );
     if (mounted) setState(() => _sttLocales = locales);
+  }
+
+  Future<void> _loadPhrases() async {
+    try {
+      final phrases = await DatabaseService.instance.getSavedPhrases();
+      if (mounted) setState(() => _phrases = phrases);
+    } catch (_) {
+      // Quick phrases are optional.
+    }
   }
 
   Widget? _missingLanguagesHint(ColorScheme colorScheme, List<String> availableTags) {
@@ -68,11 +112,11 @@ class _VoiceTranslationScreenState extends State<VoiceTranslationScreen> {
     final missing = missingPriorityLanguages(availableTags);
     if (missing.isEmpty) return null;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(top: 8),
       child: Text(
         'Not available on this device\'s speech engine: '
         '${missing.map((m) => m.displayName).join(', ')}.',
-        style: TextStyle(color: colorScheme.error, fontSize: 12),
+        style: TextStyle(color: colorScheme.onSurfaceVariant, fontSize: 12),
       ),
     );
   }
@@ -86,33 +130,32 @@ class _VoiceTranslationScreenState extends State<VoiceTranslationScreen> {
     }
 
     if (!mounted) return;
-    final micGranted = await PermissionPrimer.requestWithRationale(
-      context,
-      permission: Permission.microphone,
-      title: 'Microphone access',
-      message: 'Voice Translation needs your microphone to hear and transcribe your speech.',
-    );
+    final micGranted = await AppPermissions.ensure(context, Permission.microphone, announceDenial: false);
     if (!micGranted) {
-      setState(() => _status = 'Microphone permission denied.');
+      if (mounted) setState(() => _status = AppPermissions.neededMessage(Permission.microphone));
       return;
     }
     await Permission.speech.request();
 
     final available = await SttService.instance.initialize();
     if (!available) {
-      setState(() => _status = 'Speech recognition unavailable on this device.');
+      if (mounted) setState(() => _status = 'Speech recognition is unavailable on this device.');
       return;
     }
     if (_sttLocales.isEmpty) {
       await _loadSttLocales();
     }
 
+    if (!mounted) return;
     setState(() {
       _isListening = true;
       _status = '';
     });
     await SttService.instance.startListening(
-      (text, isFinal) => setState(() => _recognizedText = text),
+      (text, isFinal) {
+        if (!mounted) return;
+        setState(() => _recognizedText = text);
+      },
       localeId: _selectedSttLocaleId,
     );
   }
@@ -124,257 +167,253 @@ class _VoiceTranslationScreenState extends State<VoiceTranslationScreen> {
     await TtsService.instance.speak(text, language: _selectedTtsLanguage);
   }
 
+  Future<void> _savePhrase() async {
+    final text = _textController.text.trim();
+    if (text.isEmpty) return;
+    SettingsService.instance.hapticTap();
+    await DatabaseService.instance.insertSavedPhrase(text);
+    await _loadPhrases();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved to your phrases')));
+    }
+  }
+
   @override
   void dispose() {
     SttService.instance.stopListening();
     _textController.dispose();
+    _textFocus.dispose();
     super.dispose();
   }
 
-  Widget _sectionHeader(BuildContext context, ColorScheme colorScheme, String text) {
-    return Text(
-      text,
-      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-            fontWeight: FontWeight.w700,
-            color: colorScheme.onSurfaceVariant,
-          ),
-    );
-  }
+  Widget _buildListen(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final isHearing = SettingsService.instance.userProfile == UserProfile.hearingImpaired;
 
-  Widget _buildSpeechToTextSection(BuildContext context, ColorScheme colorScheme) {
-    return SectionCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (_sttLocales.isNotEmpty)
-            DropdownButtonFormField<String?>(
-              initialValue: _selectedSttLocaleId,
-              decoration: const InputDecoration(
-                labelText: 'Listen in',
-                border: OutlineInputBorder(),
-              ),
-              items: [
-                const DropdownMenuItem(value: null, child: Text('System default')),
-                for (final locale in _sttLocales)
-                  DropdownMenuItem(value: locale.localeId, child: Text(locale.name)),
-              ],
-              onChanged: (value) => setState(() => _selectedSttLocaleId = value),
-            ),
-          const SizedBox(height: 8),
-          _missingLanguagesHint(colorScheme, _sttLocales.map((l) => l.localeId).toList()) ??
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_sttLocales.isNotEmpty) ...[
+          DropdownButtonFormField<String?>(
+            initialValue: _selectedSttLocaleId,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Language being spoken'),
+            items: [
+              const DropdownMenuItem(value: null, child: Text('System default')),
+              for (final locale in _sttLocales)
+                DropdownMenuItem(value: locale.localeId, child: Text(locale.name)),
+            ],
+            onChanged: (value) => setState(() => _selectedSttLocaleId = value),
+          ),
+          _missingLanguagesHint(scheme, _sttLocales.map((l) => l.localeId).toList()) ??
               const SizedBox.shrink(),
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            constraints: const BoxConstraints(minHeight: 90),
-            child: Text(
-              _recognizedText.isEmpty ? 'Tap the mic and start speaking…' : _recognizedText,
+          const SizedBox(height: 16),
+        ],
+        // The caption surface: large, high-contrast, easy to read at a glance.
+        Container(
+          constraints: const BoxConstraints(minHeight: 220),
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: scheme.surface,
+            borderRadius: BorderRadius.circular(AppTheme.radiusCard),
+            border: Border.all(
+              color: _isListening ? scheme.primary : scheme.outlineVariant,
+              width: _isListening ? 2 : 1,
             ),
           ),
-          if (_status.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(_status, style: TextStyle(color: colorScheme.error)),
-          ],
-          const SizedBox(height: 16),
-          Center(
-            child: PressableScale(
-              borderRadius: BorderRadius.circular(36),
-              onTap: _toggleListening,
-              child: Container(
-                width: 64,
-                height: 64,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: LinearGradient(
-                    colors: _isListening
-                        ? [Colors.red, Colors.redAccent]
-                        : [colorScheme.primary, colorScheme.tertiary],
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: (_isListening ? Colors.red : colorScheme.primary)
-                          .withValues(alpha: 0.35),
-                      blurRadius: 16,
-                      spreadRadius: 1,
+          child: _recognizedText.isEmpty
+              ? Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const SizedBox(height: 40),
+                    Icon(
+                      _isListening ? Icons.hearing : Icons.closed_caption_outlined,
+                      size: 40,
+                      color: scheme.onSurfaceVariant,
                     ),
+                    const SizedBox(height: 12),
+                    Text(
+                      _isListening ? 'Listening… start speaking' : 'Captions will appear here',
+                      style: theme.textTheme.bodyLarge?.copyWith(color: scheme.onSurfaceVariant),
+                    ),
+                    const SizedBox(height: 40),
                   ],
+                )
+              : Text(
+                  _recognizedText,
+                  style: (isHearing ? theme.textTheme.headlineSmall : theme.textTheme.titleLarge)
+                      ?.copyWith(height: 1.35, fontWeight: FontWeight.w600),
                 ),
-                child: Icon(
-                  _isListening ? Icons.mic : Icons.mic_none,
-                  color: Colors.white,
-                  size: 28,
+        ),
+        if (_status.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Text(_status, style: TextStyle(color: scheme.error)),
+        ],
+        const SizedBox(height: 24),
+        Center(
+          child: Column(
+            children: [
+              PressableScale(
+                borderRadius: BorderRadius.circular(40),
+                onTap: _toggleListening,
+                child: Container(
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _isListening ? AppTheme.emergency : scheme.primary,
+                    boxShadow: [
+                      BoxShadow(
+                        color: (_isListening ? AppTheme.emergency : scheme.primary).withValues(alpha: 0.35),
+                        blurRadius: 20,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  child: Icon(
+                    _isListening ? Icons.stop_rounded : Icons.mic,
+                    color: scheme.onPrimary,
+                    size: 36,
+                  ),
                 ),
               ),
+              const SizedBox(height: 10),
+              Text(
+                _isListening ? 'Tap to stop' : 'Tap to start captions',
+                style: theme.textTheme.labelLarge?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+        if (_recognizedText.isNotEmpty && !_isListening) ...[
+          const SizedBox(height: 8),
+          Center(
+            child: TextButton.icon(
+              onPressed: () => setState(() => _recognizedText = ''),
+              icon: const Icon(Icons.clear),
+              label: const Text('Clear captions'),
             ),
           ),
         ],
-      ),
+      ],
     );
   }
 
-  Widget _buildTextToSpeechSection(BuildContext context, ColorScheme colorScheme) {
-    return SectionCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (_ttsLanguages.isNotEmpty)
-            DropdownButtonFormField<String>(
-              initialValue: _selectedTtsLanguage,
-              decoration: const InputDecoration(
-                labelText: 'Speak in',
-                border: OutlineInputBorder(),
-              ),
-              items: [
-                for (final language in _ttsLanguages)
-                  DropdownMenuItem(value: language, child: Text(language)),
-              ],
-              onChanged: (value) {
-                if (value != null) setState(() => _selectedTtsLanguage = value);
-              },
-            ),
-          const SizedBox(height: 8),
-          _missingLanguagesHint(colorScheme, _ttsLanguages) ?? const SizedBox.shrink(),
-          const SizedBox(height: 4),
-          TextField(
-            controller: _textController,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              hintText: 'Type text to speak aloud',
-            ),
-            minLines: 2,
-            maxLines: 4,
+  Widget _buildSpeak(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_ttsLanguages.isNotEmpty) ...[
+          DropdownButtonFormField<String>(
+            initialValue: _selectedTtsLanguage,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Speak in'),
+            items: [
+              for (final language in _ttsLanguages)
+                DropdownMenuItem(value: language, child: Text(language)),
+            ],
+            onChanged: (value) {
+              if (value != null) setState(() => _selectedTtsLanguage = value);
+            },
           ),
-          const SizedBox(height: 12),
-          PressableScale(
-            borderRadius: BorderRadius.circular(12),
-            onTap: _speakTypedText,
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              decoration: BoxDecoration(
-                color: colorScheme.primary,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.volume_up, color: colorScheme.onPrimary, size: 18),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Speak',
-                    style: TextStyle(color: colorScheme.onPrimary, fontWeight: FontWeight.w600),
-                  ),
-                ],
+          _missingLanguagesHint(scheme, _ttsLanguages) ?? const SizedBox.shrink(),
+          const SizedBox(height: 16),
+        ],
+        TextField(
+          controller: _textController,
+          focusNode: _textFocus,
+          minLines: 4,
+          maxLines: 8,
+          textCapitalization: TextCapitalization.sentences,
+          style: theme.textTheme.titleMedium,
+          decoration: const InputDecoration(hintText: 'Type what you want to say…'),
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: _textController.text.trim().isEmpty ? null : _speakTypedText,
+                icon: const Icon(Icons.volume_up),
+                label: const Text('Speak'),
               ),
             ),
+            const SizedBox(width: 10),
+            OutlinedButton.icon(
+              onPressed: _textController.text.trim().isEmpty ? null : _savePhrase,
+              icon: const Icon(Icons.bookmark_add_outlined),
+              label: const Text('Save'),
+            ),
+          ],
+        ),
+        if (_phrases.isNotEmpty) ...[
+          const SizedBox(height: 28),
+          const SectionHeader('Tap a phrase to say it'),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final phrase in _phrases)
+                ActionChip(
+                  avatar: Icon(Icons.volume_up_outlined, size: 18, color: scheme.primary),
+                  label: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 260),
+                    child: Text(phrase.text, overflow: TextOverflow.ellipsis),
+                  ),
+                  onPressed: () {
+                    SettingsService.instance.hapticImpact();
+                    TtsService.instance.speak(phrase.text, language: _selectedTtsLanguage);
+                  },
+                ),
+            ],
           ),
         ],
-      ),
+      ],
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    // speechImpaired users primarily communicate via typed text spoken
-    // aloud, since they may not be able to speak into the mic; everyone
-    // else reads others' speech as text first. Both directions always stay
-    // available regardless of order.
-    final ttsFirst = SettingsService.instance.userProfile == UserProfile.speechImpaired;
-
-    final speechToText = [
-      _sectionHeader(context, colorScheme, 'Speech to text'),
-      const SizedBox(height: 8),
-      _buildSpeechToTextSection(context, colorScheme),
-    ];
-    final textToSpeech = [
-      _sectionHeader(context, colorScheme, 'Text to speech'),
-      const SizedBox(height: 8),
-      _buildTextToSpeechSection(context, colorScheme),
-    ];
-
     return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        title: const Text('Voice Translation'),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-      ),
-      body: AppBackground(
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                PressableScale(
-                  borderRadius: BorderRadius.circular(18),
-                  onTap: () {
-                    SettingsService.instance.hapticTap();
-                    Navigator.of(context).pushNamed(AppRoutes.conversationMode);
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [colorScheme.secondary, colorScheme.tertiary],
-                      ),
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.forum, color: Colors.white),
-                        const SizedBox(width: 12),
-                        const Expanded(
-                          child: Text(
-                            'Conversation Mode — translate between two people',
-                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-                          ),
-                        ),
-                        const Icon(Icons.arrow_forward, color: Colors.white, size: 18),
-                      ],
-                    ),
-                  ),
+      appBar: AppBar(title: const Text('Speech & text')),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(AppTheme.screenPadding, 4, AppTheme.screenPadding, 28),
+          children: [
+            SegmentedButton<VoiceMode>(
+              showSelectedIcon: false,
+              segments: const [
+                ButtonSegment(
+                  value: VoiceMode.listen,
+                  icon: Icon(Icons.closed_caption_outlined),
+                  label: Text('Listen'),
                 ),
-                const SizedBox(height: 12),
-                PressableScale(
-                  borderRadius: BorderRadius.circular(18),
-                  onTap: () {
-                    SettingsService.instance.hapticTap();
-                    Navigator.of(context).pushNamed(AppRoutes.deviceSync);
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [colorScheme.primary, colorScheme.secondary],
-                      ),
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.bluetooth_connected, color: Colors.white),
-                        const SizedBox(width: 12),
-                        const Expanded(
-                          child: Text(
-                            'Device Sync — connect two phones directly',
-                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-                          ),
-                        ),
-                        const Icon(Icons.arrow_forward, color: Colors.white, size: 18),
-                      ],
-                    ),
-                  ),
+                ButtonSegment(
+                  value: VoiceMode.speak,
+                  icon: Icon(Icons.record_voice_over_outlined),
+                  label: Text('Speak'),
                 ),
-                const SizedBox(height: 20),
-                ...(ttsFirst ? textToSpeech : speechToText),
-                const SizedBox(height: 24),
-                ...(ttsFirst ? speechToText : textToSpeech),
               ],
+              selected: {_mode},
+              onSelectionChanged: (selection) {
+                SettingsService.instance.hapticTap();
+                setState(() => _mode = selection.first);
+              },
             ),
-          ),
+            const SizedBox(height: 20),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              child: KeyedSubtree(
+                key: ValueKey(_mode),
+                child: _mode == VoiceMode.listen ? _buildListen(context) : _buildSpeak(context),
+              ),
+            ),
+          ],
         ),
       ),
     );

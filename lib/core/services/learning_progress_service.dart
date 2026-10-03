@@ -1,5 +1,7 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'app_events.dart';
+
 class LearningProgressService {
   LearningProgressService._internal();
 
@@ -21,5 +23,6 @@ class LearningProgressService {
       ids.remove(lessonId);
     }
     await prefs.setStringList(_completedLessonsKey, ids.toList());
+    AppEvents.notifyProgressChanged();
   }
 }

@@ -8,11 +8,11 @@ import 'package:permission_handler/permission_handler.dart';
 import '../../../../core/services/database_service.dart';
 import '../../../../core/services/hand_detection_service.dart';
 import '../../../../core/services/settings_service.dart';
-import '../../../../core/utils/permission_primer.dart';
+import '../../../../core/utils/app_permissions.dart';
 import '../../../../models/custom_sign.dart';
-import '../../../../shared/widgets/app_background.dart';
-import '../../../../shared/widgets/pressable_scale.dart';
+import '../../../../core/theme/app_theme.dart';
 import '../../../../shared/widgets/section_card.dart';
+import '../../../../shared/widgets/section_header.dart';
 
 /// Records a short landmark sequence for a hand sign the built-in gesture
 /// set doesn't cover, and labels it. Recognizing these against a live feed
@@ -54,14 +54,9 @@ class _CustomSignsScreenState extends State<CustomSignsScreen> {
 
   Future<void> _setup() async {
     if (!mounted) return;
-    final granted = await PermissionPrimer.requestWithRationale(
-      context,
-      permission: Permission.camera,
-      title: 'Camera access',
-      message: 'Custom Signs needs your camera to record the hand sign you\'re saving.',
-    );
+    final granted = await AppPermissions.ensure(context, Permission.camera, announceDenial: false);
     if (!granted) {
-      setState(() => _status = 'Camera permission denied.');
+      if (mounted) setState(() => _status = AppPermissions.neededMessage(Permission.camera));
       return;
     }
 
@@ -184,146 +179,130 @@ class _CustomSignsScreenState extends State<CustomSignsScreen> {
   @override
   Widget build(BuildContext context) {
     final controller = _controller;
-    final canSave = !_isRecording && _capturedFrames.isNotEmpty;
-
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final hasLabel = _labelController.text.trim().isNotEmpty;
+    final canSave = !_isRecording && _capturedFrames.isNotEmpty && hasLabel;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Custom Signs')),
-      body: AppBackground(
-        child: SafeArea(
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(20),
-                  child: AspectRatio(
-                    aspectRatio: 3 / 4,
-                    child: controller != null && controller.value.isInitialized
-                        ? CameraPreview(controller)
-                        : Container(color: Colors.black, child: Center(child: Text(_status))),
-                  ),
-                ),
-              ),
-              Expanded(
-                child: ListView(
-                  padding: const EdgeInsets.all(16),
-                  children: [
-                    Text(
-                      _status,
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
-                    const SizedBox(height: 14),
-                    Center(
-                      child: PressableScale(
-                        borderRadius: BorderRadius.circular(32),
-                        onTap: controller == null || _isRecording ? null : _startRecording,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-                          decoration: BoxDecoration(
-                            color: _isRecording ? Colors.grey : Colors.red,
-                            borderRadius: BorderRadius.circular(32),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.fiber_manual_record, color: Colors.white, size: 18),
-                              const SizedBox(width: 8),
-                              Text(
-                                _isRecording ? 'Recording…' : 'Record (2s)',
-                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                    SectionCard(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
+      appBar: AppBar(title: const Text('My custom signs')),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(AppTheme.screenPadding, 0, AppTheme.screenPadding, 28),
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(AppTheme.radiusCard),
+              child: AspectRatio(
+                aspectRatio: 3 / 4,
+                child: controller != null && controller.value.isInitialized
+                    ? Stack(
+                        fit: StackFit.expand,
                         children: [
-                          TextField(
-                            controller: _labelController,
-                            onChanged: (_) => setState(() {}),
-                            decoration: const InputDecoration(
-                              labelText: 'Sign label',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          PressableScale(
-                            borderRadius: BorderRadius.circular(12),
-                            onTap: canSave && _labelController.text.trim().isNotEmpty ? _saveSign : null,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              decoration: BoxDecoration(
-                                color: canSave && _labelController.text.trim().isNotEmpty
-                                    ? colorScheme.primary
-                                    : colorScheme.surfaceContainerHighest,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Center(
-                                child: Text(
-                                  'Save sign',
-                                  style: TextStyle(
-                                    color: canSave && _labelController.text.trim().isNotEmpty
-                                        ? colorScheme.onPrimary
-                                        : colorScheme.onSurfaceVariant,
-                                    fontWeight: FontWeight.w600,
-                                  ),
+                          CameraPreview(controller),
+                          if (_isRecording)
+                            Align(
+                              alignment: Alignment.topCenter,
+                              child: Container(
+                                margin: const EdgeInsets.only(top: 14),
+                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: AppTheme.emergency,
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: const Text(
+                                  '● RECORDING',
+                                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, letterSpacing: 1),
                                 ),
                               ),
                             ),
-                          ),
                         ],
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    Text(
-                      'Saved signs',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w700,
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                    ),
-                    const SizedBox(height: 8),
-                    if (_savedSigns.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        child: Text(
-                          'No custom signs saved yet',
-                          style: TextStyle(color: colorScheme.onSurfaceVariant),
-                        ),
                       )
-                    else
-                      for (final sign in _savedSigns) ...[
-                        Material(
-                          color: colorScheme.surface,
-                          borderRadius: BorderRadius.circular(14),
-                          elevation: 1,
-                          shadowColor: Colors.black.withValues(alpha: 0.1),
-                          child: ListTile(
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                            title: Text(sign.label, style: const TextStyle(fontWeight: FontWeight.w600)),
-                            subtitle: Text(sign.createdAt.toLocal().toString()),
-                            trailing: IconButton(
-                              icon: Icon(Icons.delete_outline, color: colorScheme.error),
-                              onPressed: () => _deleteSign(sign.id),
-                            ),
-                          ),
+                    : Container(
+                        color: Colors.black,
+                        alignment: Alignment.center,
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          _status,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.white70),
                         ),
-                        const SizedBox(height: 8),
-                      ],
+                      ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              _status,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 14),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: _isRecording ? scheme.outline : AppTheme.emergency,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: controller == null || _isRecording ? null : _startRecording,
+              icon: const Icon(Icons.fiber_manual_record),
+              label: Text(_isRecording ? 'Recording…' : 'Record the sign (2 seconds)'),
+            ),
+            const SizedBox(height: 20),
+            SectionCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Name this sign', style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _labelController,
+                    onChanged: (_) => setState(() {}),
+                    decoration: const InputDecoration(hintText: 'e.g. "Water" or "Mama"'),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton(
+                    onPressed: canSave ? _saveSign : null,
+                    child: const Text('Save sign'),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 28),
+            const SectionHeader('Saved signs'),
+            if (_savedSigns.isEmpty)
+              SectionCard(
+                child: Text(
+                  'No custom signs saved yet. Record one above.',
+                  style: theme.textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+                ),
+              )
+            else
+              SectionCard(
+                padding: EdgeInsets.zero,
+                child: Column(
+                  children: [
+                    for (var i = 0; i < _savedSigns.length; i++) ...[
+                      if (i > 0) const Divider(height: 1, indent: 16, endIndent: 16),
+                      ListTile(
+                        title: Text(_savedSigns[i].label, style: theme.textTheme.titleMedium),
+                        subtitle: Text(_formatDate(_savedSigns[i].createdAt)),
+                        trailing: IconButton(
+                          tooltip: 'Delete',
+                          icon: Icon(Icons.delete_outline, color: scheme.error),
+                          onPressed: () => _deleteSign(_savedSigns[i].id),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
-            ],
-          ),
+          ],
         ),
       ),
     );
+  }
+
+  String _formatDate(DateTime date) {
+    final local = date.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${local.year}-${two(local.month)}-${two(local.day)}';
   }
 }

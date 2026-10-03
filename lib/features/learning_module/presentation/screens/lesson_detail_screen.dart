@@ -2,10 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/services/learning_progress_service.dart';
 import '../../../../core/services/settings_service.dart';
+import '../../../../core/theme/app_theme.dart';
 import '../../../../models/lesson.dart';
 import '../../../../routes/app_routes.dart';
-import '../../../../shared/widgets/app_background.dart';
-import '../../../../shared/widgets/pressable_scale.dart';
 import '../../../../shared/widgets/section_card.dart';
 
 class LessonDetailScreen extends StatefulWidget {
@@ -40,83 +39,61 @@ class _LessonDetailScreenState extends State<LessonDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
 
     return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-      ),
-      body: AppBackground(
-        child: SafeArea(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-            children: [
-              Icon(Icons.front_hand, size: 56, color: colorScheme.primary),
-              const SizedBox(height: 12),
-              Text(
-                widget.lesson.title,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+      appBar: AppBar(),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(AppTheme.screenPadding, 0, AppTheme.screenPadding, 24),
+          children: [
+            Container(
+              height: 150,
+              decoration: BoxDecoration(
+                gradient: AppTheme.heroGradient(context),
+                borderRadius: BorderRadius.circular(24),
               ),
-              const SizedBox(height: 20),
-              SectionCard(
-                child: Text(widget.lesson.description, style: Theme.of(context).textTheme.bodyLarge),
-              ),
-              const SizedBox(height: 20),
-              PressableScale(
-                borderRadius: BorderRadius.circular(16),
-                onTap: () {
+              child: const Center(child: Icon(Icons.front_hand, size: 64, color: Colors.white)),
+            ),
+            const SizedBox(height: 20),
+            Text(widget.lesson.title, style: theme.textTheme.headlineSmall),
+            const SizedBox(height: 14),
+            SectionCard(
+              child: Text(widget.lesson.description, style: theme.textTheme.bodyLarge),
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () {
                   SettingsService.instance.hapticTap();
                   Navigator.of(context).pushNamed(AppRoutes.signRecognition);
                 },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: colorScheme.primary, width: 1.5),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.front_hand, color: colorScheme.primary),
-                      const SizedBox(width: 10),
-                      Text(
-                        'Practice with camera',
-                        style: TextStyle(color: colorScheme.primary, fontWeight: FontWeight.w600),
-                      ),
-                    ],
-                  ),
+                icon: const Icon(Icons.videocam_outlined),
+                label: const Text('Practise with the camera'),
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                style: _isCompleted ? FilledButton.styleFrom(backgroundColor: AppTheme.success) : null,
+                onPressed: _toggleCompletion,
+                icon: Icon(_isCompleted ? Icons.check_circle : Icons.check_circle_outline),
+                label: Text(_isCompleted ? 'Completed' : 'Mark as complete'),
+              ),
+            ),
+            if (_isCompleted)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Text(
+                  'Tap again to undo.',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
                 ),
               ),
-              const SizedBox(height: 12),
-              PressableScale(
-                borderRadius: BorderRadius.circular(16),
-                onTap: _toggleCompletion,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  decoration: BoxDecoration(
-                    color: _isCompleted ? Colors.green : colorScheme.primary,
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        _isCompleted ? Icons.check_circle : Icons.check_circle_outline,
-                        color: Colors.white,
-                      ),
-                      const SizedBox(width: 10),
-                      Text(
-                        _isCompleted ? 'Completed' : 'Mark as complete',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
+          ],
         ),
       ),
     );

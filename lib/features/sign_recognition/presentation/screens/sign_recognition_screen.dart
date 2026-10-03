@@ -9,8 +9,9 @@ import '../../../../core/services/hand_detection_service.dart';
 import '../../../../core/services/settings_service.dart';
 import '../../../../core/services/sign_classifier_service.dart';
 import '../../../../core/services/tts_service.dart';
+import '../../../../core/theme/app_theme.dart';
 import '../../../../core/utils/flash_alert.dart';
-import '../../../../core/utils/permission_primer.dart';
+import '../../../../core/utils/app_permissions.dart';
 
 class SignRecognitionScreen extends StatefulWidget {
   const SignRecognitionScreen({super.key});
@@ -39,14 +40,9 @@ class _SignRecognitionScreenState extends State<SignRecognitionScreen> {
 
   Future<void> _setup() async {
     if (!mounted) return;
-    final granted = await PermissionPrimer.requestWithRationale(
-      context,
-      permission: Permission.camera,
-      title: 'Camera access',
-      message: 'Sign Recognition needs your camera to see and recognize hand signs.',
-    );
+    final granted = await AppPermissions.ensure(context, Permission.camera, announceDenial: false);
     if (!granted) {
-      setState(() => _status = 'Camera permission denied.');
+      if (mounted) setState(() => _status = AppPermissions.neededMessage(Permission.camera));
       return;
     }
 
@@ -211,18 +207,22 @@ class _SignRecognitionScreenState extends State<SignRecognitionScreen> {
     final controller = _controller;
     final imageSize = _imageSize;
     final cameraReady = controller != null && controller.value.isInitialized;
+    final theme = Theme.of(context);
 
     final cameraAspectRatio = cameraReady ? controller.value.aspectRatio : 1.0;
     final isPortrait = cameraReady &&
         (controller.value.deviceOrientation == DeviceOrientation.portraitUp ||
             controller.value.deviceOrientation == DeviceOrientation.portraitDown);
     final displayAspectRatio = isPortrait ? 1.0 / cameraAspectRatio : cameraAspectRatio;
+    final label = _recognizedLabel;
 
     return Scaffold(
+      backgroundColor: Colors.black,
       extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: const Text('Sign Recognition'),
-        backgroundColor: Colors.black.withValues(alpha: 0.25),
+        title: const Text('Sign recognition'),
+        titleTextStyle: Theme.of(context).textTheme.titleLarge?.copyWith(color: Colors.white),
+        backgroundColor: Colors.transparent,
         foregroundColor: Colors.white,
         elevation: 0,
       ),
@@ -253,53 +253,71 @@ class _SignRecognitionScreenState extends State<SignRecognitionScreen> {
             Container(
               color: Colors.black,
               alignment: Alignment.center,
-              child: Text(_status, style: const TextStyle(color: Colors.white70)),
+              padding: const EdgeInsets.all(32),
+              child: Text(
+                _status,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70, fontSize: 16),
+              ),
             ),
-          if (_recognizedLabel != null)
-            Positioned(
-              top: 100,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: AnimatedScale(
-                  scale: 1.0,
-                  duration: const Duration(milliseconds: 180),
-                  curve: Curves.easeOutBack,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(colors: [Color(0xFF7E57C2), Color(0xFF4527A0)]),
-                      borderRadius: BorderRadius.circular(24),
-                      boxShadow: [
-                        BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 12),
-                      ],
-                    ),
-                    child: Text(
-                      _recognizedLabel!,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 18,
-                      ),
-                    ),
-                  ),
+          // Dark scrims keep the title and caption readable on any background.
+          IgnorePointer(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withValues(alpha: 0.55),
+                    Colors.transparent,
+                    Colors.transparent,
+                    Colors.black.withValues(alpha: 0.75),
+                  ],
+                  stops: const [0, 0.22, 0.6, 1],
                 ),
               ),
             ),
+          ),
           Positioned(
             left: 16,
             right: 16,
-            bottom: 24,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.55),
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: Text(
-                _hands.isEmpty ? _status : '${_hands.length} hand(s) detected',
-                style: const TextStyle(color: Colors.white, fontSize: 15),
-                textAlign: TextAlign.center,
+            bottom: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOut,
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+                  decoration: BoxDecoration(
+                    color: label != null
+                        ? Colors.white
+                        : Colors.black.withValues(alpha: 0.55),
+                    borderRadius: BorderRadius.circular(22),
+                  ),
+                  child: label != null
+                      ? Row(
+                          children: [
+                            const Icon(Icons.volume_up, color: AppTheme.navy),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Text(
+                                label,
+                                style: theme.textTheme.headlineSmall?.copyWith(
+                                  color: AppTheme.navy,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      : Text(
+                          _hands.isEmpty ? _status : 'Hand found — hold the sign steady',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.white, fontSize: 15),
+                        ),
+                ),
               ),
             ),
           ),

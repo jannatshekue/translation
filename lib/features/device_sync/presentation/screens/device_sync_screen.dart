@@ -12,10 +12,9 @@ import '../../../../core/services/settings_service.dart';
 import '../../../../core/services/stt_service.dart';
 import '../../../../core/services/translation_service.dart';
 import '../../../../core/services/tts_service.dart';
-import '../../../../core/utils/permission_primer.dart';
+import '../../../../core/utils/app_permissions.dart';
 import '../../../../core/utils/priority_languages.dart';
-import '../../../../shared/widgets/app_background.dart';
-import '../../../../shared/widgets/pressable_scale.dart';
+import '../../../../core/theme/app_theme.dart';
 import '../../../../shared/widgets/section_card.dart';
 
 const _myNameKey = 'device_sync_my_name';
@@ -73,7 +72,7 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
     final savedName = prefs.getString(_myNameKey) ?? '';
     final remembered = prefs.getString(_rememberedPeerKey);
     final locales = sortByPriorityWith(
-      await SttService.instance.getAvailableLocales(),
+      await SttService.instance.getAvailableLocalesIfPermitted(),
       (l) => l.localeId,
     );
     if (!mounted) return;
@@ -93,6 +92,18 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
     // (see DeviceSyncService's class doc) — that only starts once there's
     // a specific target, from a remembered device or a scanned code.
     await _resumeDiscoverability();
+  }
+
+  Future<void> _loadLocalesAfterPermission() async {
+    final locales = sortByPriorityWith(
+      await SttService.instance.getAvailableLocalesIfPermitted(),
+      (l) => l.localeId,
+    );
+    if (!mounted || locales.isEmpty) return;
+    setState(() {
+      _locales = locales;
+      _myLocale = locales.first.localeId;
+    });
   }
 
   /// Starts advertising (or, for a remembered peer, actively re-pairing)
@@ -243,26 +254,30 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
 
   Future<bool> _requestSyncPermissions() async {
     if (!mounted) return false;
-    final granted = await PermissionPrimer.requestWithRationale(
+    // Bluetooth is what the link actually runs on, so all three are
+    // required. Location and nearby-Wi-Fi only enable the faster Wi-Fi
+    // transport (and location is mandatory on older Androids), so they're
+    // requested alongside but don't block pairing.
+    return AppPermissions.ensureAll(
       context,
-      permission: Permission.bluetoothScan,
-      title: 'Nearby device access',
-      message: 'Device Sync needs Bluetooth/Wi-Fi permissions to find and connect to the other phone.',
+      required: [
+        Permission.bluetoothScan,
+        Permission.bluetoothAdvertise,
+        Permission.bluetoothConnect,
+      ],
+      optional: [Permission.location, Permission.nearbyWifiDevices],
+      announceDenial: false, // the status bar on this screen shows the message
     );
-    if (!granted) return false;
-    await [
-      Permission.bluetoothAdvertise,
-      Permission.bluetoothConnect,
-      Permission.location,
-      Permission.nearbyWifiDevices,
-    ].request();
-    return true;
   }
 
   Future<void> _startAdvertisingOnly() async {
     final granted = await _requestSyncPermissions();
     if (!granted) {
-      setState(() => _error = 'Nearby permissions denied.');
+      setState(() {
+        // Shown in the status bar: the feature can't run, and why.
+        _state = SyncConnectionState.failed;
+        _error = AppPermissions.neededMessage(Permission.bluetoothScan);
+      });
       return;
     }
     await _service.startAdvertisingOnly(myDisplayName: _mySessionName);
@@ -271,7 +286,11 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
   Future<void> _startPairing({required String onlyConnectToName}) async {
     final granted = await _requestSyncPermissions();
     if (!granted) {
-      setState(() => _error = 'Nearby permissions denied.');
+      setState(() {
+        // Shown in the status bar: the feature can't run, and why.
+        _state = SyncConnectionState.failed;
+        _error = AppPermissions.neededMessage(Permission.bluetoothScan);
+      });
       return;
     }
     await _service.startPairing(myDisplayName: _mySessionName, onlyConnectToName: onlyConnectToName);
@@ -298,6 +317,8 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
   }
 
   Future<void> _scanToConnect() async {
+    final cameraGranted = await AppPermissions.ensure(context, Permission.camera);
+    if (!cameraGranted || !mounted) return;
     final scanned = await Navigator.of(context).push<String>(
       MaterialPageRoute(builder: (_) => const _QrScannerScreen()),
     );
@@ -324,16 +345,13 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
       return;
     }
     if (!mounted) return;
-    final micGranted = await PermissionPrimer.requestWithRationale(
-      context,
-      permission: Permission.microphone,
-      title: 'Microphone access',
-      message: 'Device Sync needs your microphone to send your speech to the other phone.',
-    );
+    final micGranted = await AppPermissions.ensure(context, Permission.microphone);
     if (!micGranted) return;
     await Permission.speech.request();
     final available = await SttService.instance.initialize();
     if (!available) return;
+    // The language list stays empty until the microphone is allowed.
+    if (_locales.isEmpty) await _loadLocalesAfterPermission();
 
     setState(() {
       _isListening = true;
@@ -398,241 +416,284 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
     }
   }
 
+  Color _statusColor(ColorScheme scheme) {
+    switch (_state) {
+      case SyncConnectionState.connected:
+        return AppTheme.success;
+      case SyncConnectionState.failed:
+      case SyncConnectionState.disconnected:
+        return scheme.error;
+      case SyncConnectionState.searching:
+      case SyncConnectionState.awaitingApproval:
+      case SyncConnectionState.connecting:
+        return scheme.primary;
+      case SyncConnectionState.idle:
+        return scheme.onSurfaceVariant;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final connected = _state == SyncConnectionState.connected;
+    final statusColor = _statusColor(scheme);
 
     return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        title: const Text('Device Sync'),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-      ),
-      body: AppBackground(
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
-                  decoration: BoxDecoration(
-                    color: colorScheme.surface,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Text(_statusText, textAlign: TextAlign.center),
+      appBar: AppBar(title: const Text('Connect devices')),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(AppTheme.screenPadding, 4, AppTheme.screenPadding, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(AppTheme.radiusControl),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        _statusText,
+                        style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              if (!connected) ...[
+                Text(
+                  'Talk with someone on their own phone. Both of you open this screen — '
+                  'one shows a code, the other scans it. No internet needed.',
+                  style: theme.textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
                 ),
                 const SizedBox(height: 16),
-                if (!connected) ...[
-                  SectionCard(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: TextField(
-                                controller: _nameController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Your name (shown to the other phone)',
-                                  border: OutlineInputBorder(),
-                                ),
-                                onSubmitted: (_) => _saveName(),
-                                onEditingComplete: _saveName,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            FilledButton(
-                              onPressed: _saveName,
-                              child: const Text('Save'),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'Have the other person scan this to connect:',
-                          style: Theme.of(context).textTheme.bodyMedium,
-                        ),
-                        const SizedBox(height: 12),
-                        Center(
-                          child: Container(
-                            padding: const EdgeInsets.all(12),
-                            color: Colors.white,
-                            child: QrImageView(data: _mySessionName, size: 180),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Center(child: Text(_mySessionName, style: const TextStyle(fontWeight: FontWeight.w600))),
-                        const SizedBox(height: 16),
-                        PressableScale(
-                          borderRadius: BorderRadius.circular(12),
-                          onTap: _scanToConnect,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            decoration: BoxDecoration(
-                              color: colorScheme.primary,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.qr_code_scanner, color: colorScheme.onPrimary, size: 18),
-                                const SizedBox(width: 8),
-                                Text(
-                                  'Scan their code instead',
-                                  style: TextStyle(color: colorScheme.onPrimary, fontWeight: FontWeight.w600),
-                                ),
-                              ],
+                SectionCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text('Your name', style: theme.textTheme.titleSmall),
+                      const SizedBox(height: 8),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _nameController,
+                              decoration: const InputDecoration(hintText: 'Shown to the other phone'),
+                              onSubmitted: (_) => _saveName(),
+                              onEditingComplete: _saveName,
                             ),
                           ),
-                        ),
-                        if (_rememberedPeer != null) ...[
-                          const SizedBox(height: 12),
-                          PressableScale(
-                            borderRadius: BorderRadius.circular(12),
-                            onTap: () => _startPairing(onlyConnectToName: _rememberedPeer!),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              decoration: BoxDecoration(
-                                border: Border.all(color: colorScheme.outlineVariant),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(
-                                'Connect to remembered device: $_rememberedPeer',
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
+                          const SizedBox(width: 10),
+                          FilledButton.tonal(
+                            style: FilledButton.styleFrom(minimumSize: const Size(72, 54)),
+                            onPressed: _saveName,
+                            child: const Text('Save'),
                           ),
                         ],
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                ],
-                if (connected) ...[
-                  OutlinedButton.icon(
-                    onPressed: _disconnect,
-                    icon: const Icon(Icons.link_off),
-                    label: const Text('Disconnect'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: colorScheme.error,
-                      side: BorderSide(color: colorScheme.error),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Always connect to this device'),
-                    subtitle: Text('Skip QR scanning next time you open Device Sync with ${_peerName ?? "this phone"}'),
-                    value: _rememberThisDevice,
-                    onChanged: _toggleRemember,
-                  ),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Long conversation mode'),
-                    subtitle: const Text(
-                      "Turns off the 'still connected?' reminder — for a lecture or a long "
-                      "chat with natural pauses.",
-                    ),
-                    value: _longConversationMode,
-                    onChanged: _toggleLongConversationMode,
-                  ),
-                  const SizedBox(height: 8),
-                  if (_locales.isNotEmpty)
-                    DropdownButtonFormField<String>(
-                      initialValue: _myLocale,
-                      decoration: const InputDecoration(
-                        labelText: 'Your language',
-                        border: OutlineInputBorder(),
-                      ),
-                      items: [
-                        for (final locale in _locales)
-                          DropdownMenuItem(value: locale.localeId, child: Text(locale.name)),
-                      ],
-                      onChanged: (value) {
-                        if (value != null) setState(() => _myLocale = value);
-                      },
-                    ),
-                  const SizedBox(height: 16),
-                  Container(
-                    constraints: const BoxConstraints(minHeight: 200),
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: colorScheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        for (final entry in _log)
-                          Align(
-                            alignment: entry.fromPeer ? Alignment.centerLeft : Alignment.centerRight,
-                            child: Container(
-                              margin: const EdgeInsets.symmetric(vertical: 4),
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: entry.fromPeer ? colorScheme.secondaryContainer : colorScheme.primaryContainer,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(entry.text),
-                            ),
-                          ),
-                        if (_isListening)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: Text(_liveText, style: TextStyle(color: colorScheme.onSurfaceVariant)),
-                          ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _typedController,
-                          decoration: const InputDecoration(
-                            hintText: 'Type a message instead…',
-                            border: OutlineInputBorder(),
-                          ),
-                          textInputAction: TextInputAction.send,
-                          onSubmitted: (_) => _sendTyped(),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton.filled(
-                        onPressed: _sendTyped,
-                        icon: const Icon(Icons.send),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  Center(
-                    child: PressableScale(
-                      borderRadius: BorderRadius.circular(36),
-                      onTap: _toggleListening,
-                      child: Container(
-                        width: 64,
-                        height: 64,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: _isListening ? Colors.red : colorScheme.primary,
+                ),
+                const SizedBox(height: 16),
+                SectionCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text('Option 1 — let them scan your code', style: theme.textTheme.titleSmall),
+                      const SizedBox(height: 14),
+                      Center(
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: scheme.outlineVariant),
+                          ),
+                          child: QrImageView(data: _mySessionName, size: 180),
                         ),
-                        child: Icon(
-                          _isListening ? Icons.mic : Icons.mic_none,
-                          color: Colors.white,
+                      ),
+                      const SizedBox(height: 10),
+                      Center(
+                        child: Text(
+                          _mySessionName,
+                          style: theme.textTheme.titleMedium?.copyWith(letterSpacing: 1),
                         ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SectionCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text('Option 2 — scan their code', style: theme.textTheme.titleSmall),
+                      const SizedBox(height: 12),
+                      FilledButton.icon(
+                        onPressed: _scanToConnect,
+                        icon: const Icon(Icons.qr_code_scanner),
+                        label: const Text('Scan their code'),
+                      ),
+                      if (_rememberedPeer != null) ...[
+                        const SizedBox(height: 10),
+                        OutlinedButton.icon(
+                          onPressed: () => _startPairing(onlyConnectToName: _rememberedPeer!),
+                          icon: const Icon(Icons.history),
+                          label: Text('Reconnect to $_rememberedPeer', overflow: TextOverflow.ellipsis),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+              if (connected) ...[
+                SectionCard(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Column(
+                    children: [
+                      SwitchListTile(
+                        title: const Text('Always connect to this device'),
+                        subtitle: Text('Skip QR scanning next time with ${_peerName ?? "this phone"}'),
+                        value: _rememberThisDevice,
+                        onChanged: _toggleRemember,
+                      ),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      SwitchListTile(
+                        title: const Text('Long conversation mode'),
+                        subtitle: const Text("Turns off the 'still connected?' reminder."),
+                        value: _longConversationMode,
+                        onChanged: _toggleLongConversationMode,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                if (_locales.isNotEmpty)
+                  DropdownButtonFormField<String>(
+                    initialValue: _myLocale,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Your language'),
+                    items: [
+                      for (final locale in _locales)
+                        DropdownMenuItem(value: locale.localeId, child: Text(locale.name)),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) setState(() => _myLocale = value);
+                    },
+                  ),
+                const SizedBox(height: 16),
+                Container(
+                  constraints: const BoxConstraints(minHeight: 220),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: scheme.surface,
+                    borderRadius: BorderRadius.circular(AppTheme.radiusCard),
+                    border: Border.all(color: scheme.outlineVariant),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (_log.isEmpty && !_isListening)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 60),
+                          child: Text(
+                            'Connected. Speak or type — it appears on the other phone.',
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+                          ),
+                        ),
+                      for (final entry in _log)
+                        Align(
+                          alignment: entry.fromPeer ? Alignment.centerLeft : Alignment.centerRight,
+                          child: Container(
+                            constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.72),
+                            margin: const EdgeInsets.symmetric(vertical: 4),
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: entry.fromPeer ? scheme.surfaceContainerHigh : scheme.primary,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Text(
+                              entry.text,
+                              style: TextStyle(color: entry.fromPeer ? scheme.onSurface : scheme.onPrimary),
+                            ),
+                          ),
+                        ),
+                      if (_isListening)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            _liveText.isEmpty ? 'Listening…' : _liveText,
+                            style: TextStyle(color: scheme.onSurfaceVariant),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _typedController,
+                        decoration: const InputDecoration(hintText: 'Type a message instead…'),
+                        textInputAction: TextInputAction.send,
+                        onSubmitted: (_) => _sendTyped(),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    IconButton.filled(
+                      tooltip: 'Send',
+                      style: IconButton.styleFrom(minimumSize: const Size(54, 54)),
+                      onPressed: _sendTyped,
+                      icon: const Icon(Icons.send),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                Center(
+                  child: GestureDetector(
+                    onTap: _toggleListening,
+                    child: Container(
+                      width: 72,
+                      height: 72,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: _isListening ? AppTheme.emergency : scheme.primary,
+                      ),
+                      child: Icon(
+                        _isListening ? Icons.stop_rounded : Icons.mic,
+                        color: Colors.white,
+                        size: 32,
                       ),
                     ),
                   ),
-                ],
+                ),
+                const SizedBox(height: 20),
+                OutlinedButton.icon(
+                  onPressed: _disconnect,
+                  icon: const Icon(Icons.link_off),
+                  label: const Text('Disconnect'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: scheme.error,
+                    side: BorderSide(color: scheme.error.withValues(alpha: 0.5)),
+                  ),
+                ),
               ],
-            ),
+            ],
           ),
         ),
       ),
@@ -668,6 +729,17 @@ class _QrScannerScreenState extends State<_QrScannerScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Scan their code')),
       body: MobileScanner(
+        errorBuilder: (context, error) => Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+              error.errorCode == MobileScannerErrorCode.permissionDenied
+                  ? 'Camera permission is off. Allow it in Settings to scan a code.'
+                  : 'The camera could not be started.',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
         onDetect: (capture) {
           if (_handled) return;
           for (final barcode in capture.barcodes) {

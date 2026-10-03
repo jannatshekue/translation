@@ -78,6 +78,23 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  fonts:
+    # Bundled so headings render with true weights on every phone, instead of
+    # whatever light system font a given manufacturer ships.
+    - family: Roboto
+      fonts:
+        - asset: assets/fonts/Roboto-Regular.ttf
+        - asset: assets/fonts/Roboto-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Roboto-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Roboto-Black.ttf
+          weight: 900
+    # Used only for the splash tagline (SIL Open Font License).
+    - family: Parisienne
+      fonts:
+        - asset: assets/fonts/Parisienne-Regular.ttf
+
   assets:
     - assets/models/
     - assets/lessons/
@@ -88,15 +105,21 @@ flutter_launcher_icons:
   android: true
   ios: true
   image_path: "assets/icon/icon.png"
-  adaptive_icon_background: "#5E35B1"
+  adaptive_icon_background: "#233E8B"
   adaptive_icon_foreground: "assets/icon/icon_foreground.png"
 
 flutter_native_splash:
-  color: "#5E35B1"
-  image: assets/icon/icon_foreground.png
+  # Android always draws a launch screen before Flutter can paint, and it can
+  # only show a still colour and picture. So it shows exactly the first frame
+  # of the app's own splash (SplashScreen): the same colour and the same icon
+  # tile in the same spot. The tagline typing and the timing then belong to
+  # SplashScreen, and the hand-over between the two is invisible.
+  # Regenerate with: dart run flutter_native_splash:create
+  color: "#1C3273"
+  image: assets/splash/splash_tile.png
   android_12:
-    image: assets/icon/icon_foreground.png
-    color: "#5E35B1"
+    color: "#1C3273"
+    image: assets/splash/splash_tile.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:

@@ -6,10 +6,12 @@ import '../../../../core/services/settings_service.dart';
 import '../../../../core/services/stt_service.dart';
 import '../../../../core/services/translation_service.dart';
 import '../../../../core/services/tts_service.dart';
-import '../../../../core/utils/permission_primer.dart';
+import '../../../../core/utils/app_permissions.dart';
 import '../../../../core/utils/priority_languages.dart';
-import '../../../../shared/widgets/app_background.dart';
+import '../../../../routes/app_routes.dart';
+import '../../../../core/theme/app_theme.dart';
 import '../../../../shared/widgets/pressable_scale.dart';
+import '../../../../shared/widgets/section_card.dart';
 
 /// Two-person conversation mode: each participant picks their own language.
 /// Whoever taps their mic has their speech recognized in their language,
@@ -42,7 +44,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   Future<void> _loadLocales() async {
     final locales = sortByPriorityWith(
-      await SttService.instance.getAvailableLocales(),
+      await SttService.instance.getAvailableLocalesIfPermitted(),
       (l) => l.localeId,
     );
     if (!mounted) return;
@@ -60,14 +62,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
     SettingsService.instance.hapticTap();
 
     if (!mounted) return;
-    final micGranted = await PermissionPrimer.requestWithRationale(
-      context,
-      permission: Permission.microphone,
-      title: 'Microphone access',
-      message: 'Conversation Mode needs your microphone to hear each speaker.',
-    );
+    final micGranted = await AppPermissions.ensure(context, Permission.microphone, announceDenial: false);
     if (!micGranted) {
-      setState(() => _status = 'Microphone permission denied.');
+      if (mounted) setState(() => _status = AppPermissions.neededMessage(Permission.microphone));
       return;
     }
     await Permission.speech.request();
@@ -77,6 +74,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
       setState(() => _status = 'Speech recognition unavailable on this device.');
       return;
     }
+    // The language lists stay empty until the microphone is allowed.
+    if (_locales.isEmpty) await _loadLocales();
 
     setState(() {
       _activeSpeaker = speaker;
@@ -172,87 +171,90 @@ class _ConversationScreenState extends State<ConversationScreen> {
     required bool isDisabled,
     required VoidCallback onMicTap,
   }) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
 
     return Expanded(
-      child: Material(
-        color: colorScheme.surface,
-        borderRadius: BorderRadius.circular(20),
-        elevation: 2,
-        shadowColor: Colors.black.withValues(alpha: 0.12),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(vertical: 6),
+      child: SectionCard(
+        padding: const EdgeInsets.all(14),
+        borderColor: isListening ? color : null,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                title,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.titleSmall?.copyWith(color: color, fontWeight: FontWeight.w700),
+              ),
+            ),
+            const SizedBox(height: 10),
+            if (_locales.isNotEmpty)
+              DropdownButtonFormField<String>(
+                initialValue: localeId,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                ),
+                items: [
+                  for (final locale in _locales)
+                    DropdownMenuItem(
+                      value: locale.localeId,
+                      child: Text(locale.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+                    ),
+                ],
+                onChanged: (value) {
+                  if (value != null) onLocaleChanged(value);
+                },
+              ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(10),
+                  color: scheme.surfaceContainerLow,
+                  borderRadius: BorderRadius.circular(14),
                 ),
-                child: Text(
-                  title,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: color, fontWeight: FontWeight.w700),
+                child: SingleChildScrollView(
+                  child: text.isEmpty
+                      ? Text(
+                          isListening ? 'Listening…' : 'Tap the mic to speak',
+                          style: theme.textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+                        )
+                      : Text(text, style: theme.textTheme.titleMedium?.copyWith(height: 1.35)),
                 ),
               ),
-              const SizedBox(height: 10),
-              if (_locales.isNotEmpty)
-                DropdownButtonFormField<String>(
-                  initialValue: localeId,
-                  isExpanded: true,
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                  ),
-                  items: [
-                    for (final locale in _locales)
-                      DropdownMenuItem(
-                        value: locale.localeId,
-                        child: Text(locale.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
-                      ),
-                  ],
-                  onChanged: (value) {
-                    if (value != null) onLocaleChanged(value);
-                  },
-                ),
-              const SizedBox(height: 10),
-              Expanded(
+            ),
+            const SizedBox(height: 12),
+            Center(
+              child: PressableScale(
+                borderRadius: BorderRadius.circular(32),
+                onTap: isDisabled ? null : onMicTap,
                 child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(10),
+                  width: 64,
+                  height: 64,
                   decoration: BoxDecoration(
-                    color: colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
+                    shape: BoxShape.circle,
+                    color: isDisabled
+                        ? scheme.surfaceContainerHigh
+                        : (isListening ? AppTheme.emergency : color),
                   ),
-                  child: SingleChildScrollView(child: Text(text)),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Center(
-                child: PressableScale(
-                  borderRadius: BorderRadius.circular(30),
-                  onTap: isDisabled ? null : onMicTap,
-                  child: Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: isDisabled
-                          ? colorScheme.surfaceContainerHighest
-                          : (isListening ? Colors.red : color),
-                    ),
-                    child: Icon(
-                      isListening ? Icons.mic : Icons.mic_none,
-                      color: isDisabled ? colorScheme.onSurfaceVariant : Colors.white,
-                    ),
+                  child: Icon(
+                    isListening ? Icons.stop_rounded : Icons.mic,
+                    size: 28,
+                    color: isDisabled ? scheme.onSurfaceVariant : Colors.white,
                   ),
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -260,65 +262,67 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
 
     return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        title: const Text('Conversation Mode'),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-      ),
-      body: AppBackground(
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-            child: Column(
-              children: [
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
-                  decoration: BoxDecoration(
-                    color: colorScheme.surface,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Text(_status, textAlign: TextAlign.center),
+      appBar: AppBar(title: const Text('Conversation mode')),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(AppTheme.screenPadding, 0, AppTheme.screenPadding, 16),
+          child: Column(
+            children: [
+              SectionCard(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, size: 20, color: scheme.primary),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(_status, style: theme.textTheme.bodyMedium)),
+                  ],
                 ),
-                const SizedBox(height: 16),
-                Expanded(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _buildSide(
-                        title: 'Person A',
-                        color: Colors.indigo,
-                        localeId: _personALocale,
-                        onLocaleChanged: (value) => setState(() => _personALocale = value),
-                        text: _personAText,
-                        isListening: _activeSpeaker == _ActiveSpeaker.personA,
-                        isDisabled: _activeSpeaker == _ActiveSpeaker.personB,
-                        onMicTap: () => _activeSpeaker == _ActiveSpeaker.personA
-                            ? _cancelTurn()
-                            : _startTurn(_ActiveSpeaker.personA),
-                      ),
-                      const SizedBox(width: 14),
-                      _buildSide(
-                        title: 'Person B',
-                        color: Colors.deepOrange,
-                        localeId: _personBLocale,
-                        onLocaleChanged: (value) => setState(() => _personBLocale = value),
-                        text: _personBText,
-                        isListening: _activeSpeaker == _ActiveSpeaker.personB,
-                        isDisabled: _activeSpeaker == _ActiveSpeaker.personA,
-                        onMicTap: () => _activeSpeaker == _ActiveSpeaker.personB
-                            ? _cancelTurn()
-                            : _startTurn(_ActiveSpeaker.personB),
-                      ),
-                    ],
-                  ),
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: () => Navigator.of(context).pushReplacementNamed(AppRoutes.deviceSync),
+                  icon: const Icon(Icons.bluetooth_connected, size: 18),
+                  label: const Text('Each have your own phone? Connect devices'),
                 ),
-              ],
-            ),
+              ),
+              Expanded(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildSide(
+                      title: 'Person A',
+                      color: scheme.primary,
+                      localeId: _personALocale,
+                      onLocaleChanged: (value) => setState(() => _personALocale = value),
+                      text: _personAText,
+                      isListening: _activeSpeaker == _ActiveSpeaker.personA,
+                      isDisabled: _activeSpeaker == _ActiveSpeaker.personB,
+                      onMicTap: () => _activeSpeaker == _ActiveSpeaker.personA
+                          ? _cancelTurn()
+                          : _startTurn(_ActiveSpeaker.personA),
+                    ),
+                    const SizedBox(width: 12),
+                    _buildSide(
+                      title: 'Person B',
+                      color: scheme.secondary,
+                      localeId: _personBLocale,
+                      onLocaleChanged: (value) => setState(() => _personBLocale = value),
+                      text: _personBText,
+                      isListening: _activeSpeaker == _ActiveSpeaker.personB,
+                      isDisabled: _activeSpeaker == _ActiveSpeaker.personA,
+                      onMicTap: () => _activeSpeaker == _ActiveSpeaker.personB
+                          ? _cancelTurn()
+                          : _startTurn(_ActiveSpeaker.personB),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
       ),
