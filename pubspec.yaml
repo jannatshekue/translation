@@ -98,7 +98,6 @@ flutter:
   assets:
     - assets/models/
     - assets/lessons/
-    - assets/images/
     - assets/icon/
 
 flutter_launcher_icons:
